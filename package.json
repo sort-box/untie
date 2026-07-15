@@ -11,8 +11,10 @@
 		"#/*": "./src/*"
 	},
 	"scripts": {
-		"dev": "vite dev --port 3000",
-		"dev:desktop": "concurrently --kill-others --names web,desktop --prefix-colors cyan,magenta \"bun run dev\" \"wait-on tcp:3000 && electron .\"",
+		"dev": "concurrently --kill-others --names convex,web --prefix-colors yellow,cyan \"bun run dev:convex\" \"bun run dev:web\"",
+		"dev:convex": "convex dev",
+		"dev:web": "vite dev --port 3000",
+		"dev:desktop": "concurrently --kill-others --names convex,web,desktop --prefix-colors yellow,cyan,magenta \"bun run dev:convex\" \"bun run dev:web\" \"wait-on tcp:3000 && electron .\"",
 		"generate-routes": "tsr generate",
 		"build": "vite build",
 		"desktop:pack": "bun run build && electron-builder --dir",

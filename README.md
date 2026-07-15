@@ -15,10 +15,10 @@ Clerk authentication, Tailwind CSS, and shadcn/ui.
 ```bash
 bun install
 cp .env.example .env.local
-bunx --bun convex dev
+bunx --bun convex dev --once
 ```
 
-Add the Clerk publishable and secret keys to `.env.local`. `bunx --bun convex dev`
+Add the Clerk publishable and secret keys to `.env.local`. `bunx --bun convex dev --once`
 fills in `CONVEX_DEPLOYMENT` and `VITE_CONVEX_URL` after you select or create a
 Convex project.
 
@@ -35,10 +35,10 @@ sign-out and sign-in may be required after enabling the integration.
 ## Run the app
 
 ```bash
-# Browser development
+# Browser development with the Convex watcher
 bun run dev
 
-# Electron development (starts the web server and desktop shell)
+# Electron development with the Convex watcher
 bun run dev:desktop
 ```
 
