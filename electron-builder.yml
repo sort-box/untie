@@ -1,0 +1,14 @@
+appId: com.sortbox.untie
+productName: Untie
+directories:
+  output: release
+files:
+  - electron/**
+  - dist/**
+  - package.json
+mac:
+  target: dmg
+win:
+  target: nsis
+linux:
+  target: AppImage
