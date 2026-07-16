@@ -54,6 +54,13 @@ export function createJournaledApplyEngine(options: {
 		batchId: string;
 		state: string;
 	};
+	undo(batchId: string): {
+		batchId: string;
+		state: string;
+		outcome: "complete" | "partial" | "unavailable";
+		files: Array<{ itemId: string; outcome: string; reason?: string }>;
+		folders: Array<{ folderId: string; outcome: string }>;
+	};
 	readBatch(batchId: string): JournalBatch;
 	preflight(binding: { snapshotId: string; fingerprint: string }): unknown;
 };
