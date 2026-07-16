@@ -1,6 +1,7 @@
 const capabilityNames = Object.freeze([
 	"ping",
 	"cancellableDelay",
+	"getStartupStatus",
 	"selectFolder",
 	"listFolderGrants",
 	"revokeFolderGrant",
@@ -201,6 +202,43 @@ const chatSummary = (value) =>
 const chatSummaries = (value) =>
 	Array.isArray(value) && value.every(chatSummary);
 
+function startupStatusResponse(value) {
+	const checked = exactKeys(
+		value,
+		[
+			"status",
+			"reasons",
+			"recoveredBatchCount",
+			"needsAttentionCount",
+			"detail",
+		],
+		"response",
+	);
+	if (!checked.ok) return checked;
+	const validDetail =
+		value.detail === undefined ||
+		(value.detail !== null &&
+			typeof value.detail === "object" &&
+			!Array.isArray(value.detail) &&
+			Object.keys(value.detail).every((key) =>
+				["code", "store"].includes(key),
+			) &&
+			typeof value.detail.code === "string" &&
+			(value.detail.store === undefined ||
+				typeof value.detail.store === "string"));
+	if (
+		!["recovered", "needs_attention", "blocked"].includes(value.status) ||
+		!stringArray(value.reasons) ||
+		!Number.isSafeInteger(value.recoveredBatchCount) ||
+		value.recoveredBatchCount < 0 ||
+		!Number.isSafeInteger(value.needsAttentionCount) ||
+		value.needsAttentionCount < 0 ||
+		!validDetail
+	)
+		return validationError("response has an invalid startup status");
+	return valid(value);
+}
+
 // A request addressing one session by opaque id. Stricter than opaqueIdRequest:
 // the id must also be path-free per CHAT_SESSION_ID_PATTERN.
 function opaqueChatSessionRequest(value) {
@@ -213,6 +251,10 @@ function opaqueChatSessionRequest(value) {
 }
 
 const contracts = Object.freeze({
+	getStartupStatus: {
+		request: emptyObject,
+		response: startupStatusResponse,
+	},
 	ping: {
 		request: exactFields({ message: nonEmptyString }, "request"),
 		response: exactResponse({ message: nonEmptyString }),

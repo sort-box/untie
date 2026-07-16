@@ -72,6 +72,22 @@ export type SortRiskClassification = {
 	readonly metrics: { readonly fileCount: number; readonly totalBytes: number };
 	readonly toolMarkers: readonly string[];
 };
+export type StartupReason =
+	| "migration_failure"
+	| "grant_restore_failure"
+	| "journal_recovery_failure"
+	| "journal_needs_attention"
+	| "unavailable_grant"
+	| "expired_auth"
+	| "unauthorized_auth"
+	| "interrupted_onboarding";
+export type StartupStatus = {
+	readonly status: "recovered" | "needs_attention" | "blocked";
+	readonly reasons: readonly StartupReason[];
+	readonly recoveredBatchCount: number;
+	readonly needsAttentionCount: number;
+	readonly detail?: { readonly code: string; readonly store?: string };
+};
 
 // Chat persistence (P2). Messages are typed loosely at the capability boundary
 // by their shared base fields only: the concrete `ChatMessage` union lives in
@@ -111,6 +127,10 @@ export type ChatSessionSummary = {
 };
 
 export interface CapabilityMap {
+	getStartupStatus: {
+		request: Record<never, never>;
+		response: StartupStatus;
+	};
 	ping: { request: { message: string }; response: { message: string } };
 	cancellableDelay: {
 		request: { milliseconds: number };

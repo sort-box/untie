@@ -39,6 +39,7 @@ describe("sandboxed preload bridge", () => {
 				"classifyFolderRisk",
 				"deleteAllChatData",
 				"deleteChatSession",
+				"getStartupStatus",
 				"listChatSessions",
 				"listFolderGrants",
 				"loadChatSession",
