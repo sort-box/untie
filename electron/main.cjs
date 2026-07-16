@@ -11,6 +11,7 @@ const {
 } = require("./capabilities/authorization.cjs");
 const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
+const { createIndexSynchronizationEngine } = require("./index-sync.cjs");
 const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
 const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
@@ -29,6 +30,7 @@ let chatStore;
 let folderGrantService;
 let folderScanner;
 let opaqueFileRegistry;
+let indexSyncEngine;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -210,13 +212,23 @@ app.whenReady().then(async () => {
 			referenceStore: capabilityReferenceStore,
 			showOpenDialog: (options) => dialog.showOpenDialog(options),
 		});
-		folderGrantService.restore();
+		const restoredGrants = folderGrantService.restore();
 		folderScanner = createFolderScanner({
 			appDataDirectory: app.getPath("userData"),
 		});
 		opaqueFileRegistry = createOpaqueFileRegistry({
 			referenceStore: capabilityReferenceStore,
 		});
+		indexSyncEngine = createIndexSynchronizationEngine({
+			index: fileIndex,
+			scanner: folderScanner,
+			authorizer: capabilityAuthorizer,
+		});
+		await Promise.allSettled(
+			restoredGrants
+				.filter((grant) => grant.state === "active")
+				.map((grant) => indexSyncEngine.syncGrant(grant.grantId)),
+		);
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -246,6 +258,7 @@ app.on("before-quit", () => {
 	folderGrantService = undefined;
 	folderScanner = undefined;
 	opaqueFileRegistry = undefined;
+	indexSyncEngine = undefined;
 	productionServer?.close();
 });
 
