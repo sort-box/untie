@@ -188,6 +188,31 @@ describe("capability registry", () => {
 		});
 	});
 
+	it("accepts a detail-bearing blocked startup status", async () => {
+		const registry = createCapabilityRegistry({
+			getStartupStatus: async () => ({
+				status: "blocked",
+				reasons: ["migration_failure"],
+				recoveredBatchCount: 0,
+				needsAttentionCount: 0,
+				detail: { code: "STORE_MIGRATION_FAILED", store: "chat" },
+			}),
+		});
+		const result = await registry.invoke(undefined, {
+			requestId: "startup-detail",
+			capability: "getStartupStatus",
+			input: {},
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			value: {
+				status: "blocked",
+				detail: { code: "STORE_MIGRATION_FAILED", store: "chat" },
+			},
+		});
+	});
+
 	it("rejects a grant-list response that leaks a filesystem path", async () => {
 		const registry = createCapabilityRegistry({
 			listFolderGrants: async () => ({

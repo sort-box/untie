@@ -136,7 +136,24 @@ function createJournalStore({
 		}
 	}
 
-	return { persist, read };
+	function list() {
+		let entries;
+		try {
+			entries = fsApi.readdirSync(directory);
+		} catch (cause) {
+			throw applyError(
+				"JOURNAL_READ_FAILED",
+				"Apply journal directory could not be read",
+				cause,
+			);
+		}
+		return entries
+			.filter((entry) => /^batch_[0-9a-f]{32}\.json$/.test(entry))
+			.sort()
+			.map((entry) => read(entry.slice(0, -5)));
+	}
+
+	return { persist, read, list };
 }
 
 function createJournaledApplyEngine({

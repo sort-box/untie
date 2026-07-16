@@ -33,6 +33,7 @@ export function createJournalStore(options: {
 }): {
 	persist(batch: JournalBatch): JournalBatch;
 	read(batchId: string): JournalBatch;
+	list(): JournalBatch[];
 };
 
 export function createJournaledApplyEngine(options: {
