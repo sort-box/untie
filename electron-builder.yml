@@ -8,6 +8,28 @@ files:
   - package.json
 mac:
   target: dmg
+  category: public.app-category.utilities
+  # Hardened Runtime is mandatory for notarization of a DMG distributed outside
+  # the Mac App Store. Default build is NON-sandboxed (TCC-gated filesystem
+  # access). To validate the App Sandbox / security-scoped-bookmark model, point
+  # entitlements + entitlementsInherit at the sandbox plists (see
+  # docs/spikes/R1-signing-fs-access.md).
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Notarization runs automatically when Apple credentials are present in the
+  # environment. Requires a "Developer ID Application" certificate in the login
+  # keychain plus EITHER
+  #   APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID
+  # OR
+  #   APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER
+  notarize: true
+  extendInfo:
+    NSDesktopFolderUsageDescription: Untie sorts the files on your Desktop that you choose to grant.
+    NSDocumentsFolderUsageDescription: Untie sorts the files in Documents that you choose to grant.
+    NSDownloadsFolderUsageDescription: Untie sorts the files in Downloads that you choose to grant.
+    NSRemovableVolumesUsageDescription: Untie sorts files on removable volumes that you choose to grant.
 win:
   target: nsis
 linux:

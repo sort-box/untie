@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Child/helper-process entitlements for the App Sandbox variant only.
+	  Used as electron-builder `entitlementsInherit` when building with
+	  build/entitlements.mac.sandbox.plist so the Electron helper processes
+	  inherit the parent's sandbox. Not used by the default non-sandbox build.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.inherit</key>
+	<true/>
+</dict>
+</plist>
