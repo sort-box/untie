@@ -1,9 +1,13 @@
 import {
+	LlmCancelledError,
 	LlmConfigurationError,
+	LlmError,
+	LlmOfflineError,
 	LlmRateLimitError,
 	LlmRequestError,
 	LlmResponseError,
 	LlmStructuredOutputError,
+	LlmTimeoutError,
 } from "./errors";
 import type {
 	LlmRequest,
@@ -25,6 +29,7 @@ export interface OpenRouterServiceOptions {
 	appName?: string;
 	fetch?: typeof globalThis.fetch;
 	defaultTimeoutMs?: number;
+	requestIdFactory?: () => string;
 }
 
 interface OpenRouterCompletion {
@@ -45,6 +50,7 @@ interface OpenRouterCompletion {
 interface RequestSignal {
 	signal: AbortSignal;
 	didTimeout: () => boolean;
+	didCancel: () => boolean;
 	cleanup: () => void;
 }
 
@@ -55,6 +61,7 @@ export class OpenRouterService implements LlmService {
 	readonly #appName?: string;
 	readonly #fetch: typeof globalThis.fetch;
 	readonly #defaultTimeoutMs: number;
+	readonly #requestIdFactory: () => string;
 
 	constructor(options: OpenRouterServiceOptions) {
 		const apiKey = options.apiKey.trim();
@@ -75,6 +82,8 @@ export class OpenRouterService implements LlmService {
 		this.#appName = options.appName;
 		this.#fetch = options.fetch ?? globalThis.fetch;
 		this.#defaultTimeoutMs = defaultTimeoutMs;
+		this.#requestIdFactory =
+			options.requestIdFactory ?? (() => crypto.randomUUID());
 	}
 
 	async generateText(request: LlmRequest): Promise<LlmResult<string>> {
@@ -99,7 +108,7 @@ export class OpenRouterService implements LlmService {
 		} catch (error) {
 			throw new LlmStructuredOutputError(
 				"OpenRouter returned invalid JSON for a structured response",
-				{ cause: error },
+				{ cause: error, requestId: result.requestId },
 			);
 		}
 
@@ -111,7 +120,7 @@ export class OpenRouterService implements LlmService {
 		} catch (error) {
 			throw new LlmStructuredOutputError(
 				"OpenRouter response did not satisfy the expected structure",
-				{ cause: error },
+				{ cause: error, requestId: result.requestId },
 			);
 		}
 	}
@@ -120,8 +129,11 @@ export class OpenRouterService implements LlmService {
 		request: LlmRequest,
 		responseFormat?: Record<string, unknown>,
 	): Promise<LlmResult<string>> {
+		const requestId = request.requestId ?? this.#requestIdFactory();
 		if (request.messages.length === 0) {
-			throw new LlmConfigurationError("At least one LLM message is required");
+			throw new LlmConfigurationError("At least one LLM message is required", {
+				requestId,
+			});
 		}
 
 		const requestSignal = createRequestSignal(
@@ -133,7 +145,7 @@ export class OpenRouterService implements LlmService {
 		try {
 			response = await this.#fetch(OPENROUTER_CHAT_COMPLETIONS_URL, {
 				method: "POST",
-				headers: this.#headers(),
+				headers: this.#headers(requestId),
 				body: JSON.stringify({
 					model: request.model ?? this.#model,
 					messages: request.messages,
@@ -151,12 +163,20 @@ export class OpenRouterService implements LlmService {
 				signal: requestSignal.signal,
 			});
 		} catch (error) {
-			const message = requestSignal.didTimeout()
-				? "OpenRouter request timed out"
-				: isAbortError(error)
-					? "OpenRouter request was aborted"
-					: "OpenRouter request failed";
-			throw new LlmRequestError(message, undefined, { cause: error });
+			if (requestSignal.didTimeout()) {
+				throw new LlmTimeoutError({ cause: error, requestId });
+			}
+			if (requestSignal.didCancel() || isAbortError(error)) {
+				throw new LlmCancelledError({ cause: error, requestId });
+			}
+			if (isOfflineError(error)) {
+				throw new LlmOfflineError({ cause: error, requestId });
+			}
+			throw new LlmRequestError("OpenRouter request failed", undefined, {
+				cause: error,
+				requestId,
+				retryable: true,
+			});
 		} finally {
 			requestSignal.cleanup();
 		}
@@ -166,12 +186,14 @@ export class OpenRouterService implements LlmService {
 				throw new LlmRateLimitError(
 					response.status,
 					parseRetryAfter(response.headers.get("Retry-After")),
+					{ requestId },
 				);
 			}
 
 			throw new LlmRequestError(
 				`OpenRouter request failed with status ${response.status}`,
 				response.status,
+				{ requestId },
 			);
 		}
 
@@ -181,19 +203,32 @@ export class OpenRouterService implements LlmService {
 		} catch (error) {
 			throw new LlmResponseError("OpenRouter returned a non-JSON response", {
 				cause: error,
+				requestId,
 			});
 		}
 
-		const completion = parseCompletion(payload);
+		let completion: OpenRouterCompletion;
+		try {
+			completion = parseCompletion(payload);
+		} catch (error) {
+			if (error instanceof LlmError) throw error.withRequestId(requestId);
+			throw error;
+		}
 		const choice = completion.choices[0];
 		const content = choice?.message?.content;
 		if (typeof content !== "string") {
-			throw new LlmResponseError("OpenRouter response did not contain content");
+			throw new LlmResponseError(
+				"OpenRouter response did not contain content",
+				{
+					requestId,
+				},
+			);
 		}
 
 		return {
 			data: content,
-			requestId: completion.id,
+			requestId,
+			providerRequestId: completion.id,
 			model: completion.model,
 			finishReason: choice.finish_reason ?? null,
 			usage: parseUsage(completion.usage),
@@ -201,10 +236,11 @@ export class OpenRouterService implements LlmService {
 		};
 	}
 
-	#headers(): Record<string, string> {
+	#headers(requestId: string): Record<string, string> {
 		return {
 			Authorization: `Bearer ${this.#apiKey}`,
 			"Content-Type": "application/json",
+			"X-Request-ID": requestId,
 			...(this.#appUrl ? { "HTTP-Referer": this.#appUrl } : {}),
 			...(this.#appName ? { "X-OpenRouter-Title": this.#appName } : {}),
 		};
@@ -254,7 +290,11 @@ function createRequestSignal(
 
 	const controller = new AbortController();
 	let timedOut = false;
-	const abortFromExternal = () => controller.abort(externalSignal?.reason);
+	let cancelled = false;
+	const abortFromExternal = () => {
+		cancelled = true;
+		controller.abort(externalSignal?.reason);
+	};
 	if (externalSignal?.aborted) abortFromExternal();
 	else
 		externalSignal?.addEventListener("abort", abortFromExternal, {
@@ -269,6 +309,7 @@ function createRequestSignal(
 	return {
 		signal: controller.signal,
 		didTimeout: () => timedOut,
+		didCancel: () => cancelled,
 		cleanup: () => {
 			clearTimeout(timeout);
 			externalSignal?.removeEventListener("abort", abortFromExternal);
@@ -288,4 +329,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAbortError(error: unknown): boolean {
 	return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isOfflineError(error: unknown): boolean {
+	if (error instanceof TypeError) return true;
+	if (typeof error !== "object" || error === null || !("code" in error)) {
+		return false;
+	}
+	return [
+		"EAI_AGAIN",
+		"ECONNREFUSED",
+		"ENETDOWN",
+		"ENETUNREACH",
+		"ENOTFOUND",
+	].includes(String(error.code));
 }

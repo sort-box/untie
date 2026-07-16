@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_OPENROUTER_MODEL,
+	LlmCancelledError,
 	LlmConfigurationError,
+	LlmOfflineError,
 	LlmRateLimitError,
 	LlmRequestError,
 	LlmResponseError,
@@ -51,6 +53,7 @@ describe("OpenRouterService", () => {
 		const service = new OpenRouterService({
 			apiKey: API_KEY,
 			fetch: fetchMock,
+			requestIdFactory: () => "request-stable-1",
 		});
 
 		const result = await service.generateText({
@@ -60,7 +63,8 @@ describe("OpenRouterService", () => {
 
 		expect(result).toEqual({
 			data: "Hello",
-			requestId: "generation-1",
+			requestId: "request-stable-1",
+			providerRequestId: "generation-1",
 			model: DEFAULT_OPENROUTER_MODEL,
 			finishReason: "stop",
 			usage: {
@@ -76,6 +80,7 @@ describe("OpenRouterService", () => {
 		expect(init?.headers).toMatchObject({
 			Authorization: `Bearer ${API_KEY}`,
 			"Content-Type": "application/json",
+			"X-Request-ID": "request-stable-1",
 		});
 		expect(JSON.parse(String(init?.body))).toMatchObject({
 			model: DEFAULT_OPENROUTER_MODEL,
@@ -192,7 +197,14 @@ describe("OpenRouterService", () => {
 		).rejects.toBeInstanceOf(LlmStructuredOutputError);
 	});
 
-	it.each([401, 402, 500])("normalizes HTTP %s failures", async (status) => {
+	it.each([
+		[400, false],
+		[401, false],
+		[402, false],
+		[422, false],
+		[500, true],
+		[502, true],
+	])("classifies HTTP %s failures (retryable=%s)", async (status, retryable) => {
 		const service = new OpenRouterService({
 			apiKey: API_KEY,
 			fetch: vi.fn(async () => jsonResponse({ error: API_KEY }, { status })),
@@ -202,7 +214,11 @@ describe("OpenRouterService", () => {
 			.generateText({ messages: [{ role: "user", content: "Hello" }] })
 			.catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(LlmRequestError);
-		expect(error).toMatchObject({ status });
+		expect(error).toMatchObject({
+			status,
+			retryable,
+			classification: retryable ? "retryable" : "terminal",
+		});
 		expect(String(error)).not.toContain(API_KEY);
 	});
 
@@ -221,6 +237,10 @@ describe("OpenRouterService", () => {
 			.catch((caught: unknown) => caught);
 		expect(error).toBeInstanceOf(LlmRateLimitError);
 		expect(error).toMatchObject({ status, retryAfterSeconds: 12 });
+		expect(error).toMatchObject({
+			retryable: true,
+			classification: "retryable",
+		});
 	});
 
 	it("handles malformed and non-JSON success responses", async () => {
@@ -245,10 +265,13 @@ describe("OpenRouterService", () => {
 		).rejects.toBeInstanceOf(LlmResponseError);
 	});
 
-	it("handles aborts and timeouts", async () => {
+	it("times out with a typed retryable error and aborts the fetch", async () => {
+		vi.useFakeTimers();
+		let fetchSignal: AbortSignal | undefined;
 		const pendingFetch = vi.fn(
 			(_input: RequestInfo | URL, init?: RequestInit) =>
 				new Promise<Response>((_resolve, reject) => {
+					fetchSignal = init?.signal ?? undefined;
 					if (init?.signal?.aborted) {
 						reject(new DOMException("Aborted", "AbortError"));
 						return;
@@ -263,26 +286,78 @@ describe("OpenRouterService", () => {
 			fetch: pendingFetch,
 		});
 
-		await expect(
-			service.generateText({
-				messages: [{ role: "user", content: "Hello" }],
-				timeoutMs: 1,
-			}),
-		).rejects.toMatchObject({
-			code: "REQUEST_FAILED",
-			message: "OpenRouter request timed out",
+		const result = service.generateText({
+			messages: [{ role: "user", content: "Hello" }],
+			timeoutMs: 100,
+			requestId: "timeout-request",
 		});
+		const rejection = expect(result).rejects.toMatchObject({
+			code: "REQUEST_TIMEOUT",
+			requestId: "timeout-request",
+			retryable: true,
+		});
+		await vi.advanceTimersByTimeAsync(100);
+		await rejection;
+		expect(fetchSignal?.aborted).toBe(true);
+		vi.useRealTimers();
+	});
 
+	it("propagates caller cancellation to the in-flight fetch", async () => {
+		let fetchSignal: AbortSignal | undefined;
+		const pendingFetch = vi.fn(
+			(_input: RequestInfo | URL, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					fetchSignal = init?.signal ?? undefined;
+					init?.signal?.addEventListener("abort", () =>
+						reject(new DOMException("Aborted", "AbortError")),
+					);
+				}),
+		);
+		const service = new OpenRouterService({
+			apiKey: API_KEY,
+			fetch: pendingFetch,
+		});
 		const controller = new AbortController();
+		const result = service.generateText({
+			messages: [{ role: "user", content: "Hello" }],
+			signal: controller.signal,
+			requestId: "cancel-request",
+		});
 		controller.abort();
+		await expect(result).rejects.toBeInstanceOf(LlmCancelledError);
+		expect(fetchSignal?.aborted).toBe(true);
+		await expect(result).rejects.toMatchObject({
+			code: "REQUEST_CANCELLED",
+			requestId: "cancel-request",
+			retryable: false,
+		});
+	});
+
+	it.each([
+		new TypeError("fetch failed"),
+		Object.assign(new Error("unreachable"), { code: "ENETUNREACH" }),
+	])("maps network-unreachable failures to offline", async (networkError) => {
+		const service = new OpenRouterService({
+			apiKey: API_KEY,
+			fetch: vi.fn(async () => {
+				throw networkError;
+			}),
+		});
 		await expect(
 			service.generateText({
 				messages: [{ role: "user", content: "Hello" }],
-				signal: controller.signal,
+				requestId: "offline-request",
+			}),
+		).rejects.toBeInstanceOf(LlmOfflineError);
+		await expect(
+			service.generateText({
+				messages: [{ role: "user", content: "Hello" }],
+				requestId: "offline-request",
 			}),
 		).rejects.toMatchObject({
-			code: "REQUEST_FAILED",
-			message: "OpenRouter request was aborted",
+			code: "OFFLINE",
+			retryable: true,
+			requestId: "offline-request",
 		});
 	});
 

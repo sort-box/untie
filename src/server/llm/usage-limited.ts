@@ -1,4 +1,4 @@
-import { LlmAccountQuotaError } from "./errors";
+import { LlmAccountQuotaError, LlmError, LlmRequestError } from "./errors";
 import type {
 	LlmRequest,
 	LlmResult,
@@ -23,6 +23,7 @@ export interface TokenQuotaStore {
 
 export type LlmGatewayLogEvent = {
 	accountRef: string;
+	requestId: string;
 	model: string;
 	status: "completed" | "failed" | "quota_exhausted";
 	reservedTokens: number;
@@ -34,6 +35,7 @@ export type LlmGatewayLogger = (event: LlmGatewayLogEvent) => void;
 export type UsageLimitedLlmServiceOptions = {
 	accountRef?: string;
 	logger?: LlmGatewayLogger;
+	requestIdFactory?: () => string;
 };
 
 export class UsageLimitedLlmService implements LlmService {
@@ -44,7 +46,9 @@ export class UsageLimitedLlmService implements LlmService {
 	) {}
 
 	async generateText(request: LlmRequest): Promise<LlmResult<string>> {
-		return await this.#run(request, () => this.service.generateText(request));
+		return await this.#run(request, (lifecycleRequest) =>
+			this.service.generateText(lifecycleRequest),
+		);
 	}
 
 	async generateObject<T>(
@@ -52,7 +56,12 @@ export class UsageLimitedLlmService implements LlmService {
 	): Promise<LlmResult<T>> {
 		return await this.#run(
 			request,
-			() => this.service.generateObject(request),
+			(lifecycleRequest) =>
+				this.service.generateObject({
+					...request,
+					...lifecycleRequest,
+					responseSchema: request.responseSchema,
+				}),
 			{
 				additionalCharacters: JSON.stringify(request.responseSchema.schema)
 					.length,
@@ -62,11 +71,16 @@ export class UsageLimitedLlmService implements LlmService {
 
 	async #run<T>(
 		request: LlmRequest,
-		generate: () => Promise<LlmResult<T>>,
+		generate: (request: LlmRequest) => Promise<LlmResult<T>>,
 		options: { additionalCharacters?: number } = {},
 	): Promise<LlmResult<T>> {
+		const requestId =
+			request.requestId ??
+			this.options.requestIdFactory?.() ??
+			crypto.randomUUID();
+		const lifecycleRequest = { ...request, requestId };
 		const reservedTokens = estimateInputTokens(
-			request,
+			lifecycleRequest,
 			options.additionalCharacters,
 		);
 		let reservation: TokenQuotaReservation;
@@ -74,18 +88,24 @@ export class UsageLimitedLlmService implements LlmService {
 			reservation = await this.quota.reserve(reservedTokens);
 		} catch (error) {
 			if (error instanceof LlmAccountQuotaError) {
-				this.#log(request, "quota_exhausted", reservedTokens);
+				error.withRequestId(requestId);
+				this.#log(lifecycleRequest, "quota_exhausted", reservedTokens);
 			}
 			throw error;
 		}
 
 		let result: LlmResult<T>;
 		try {
-			result = await generate();
+			result = await generate(lifecycleRequest);
 		} catch (error) {
 			await this.quota.settle(reservation, 0);
-			this.#log(request, "failed", reservation.reservedTokens, 0);
-			throw error;
+			this.#log(lifecycleRequest, "failed", reservation.reservedTokens, 0);
+			if (error instanceof LlmError) throw error.withRequestId(requestId);
+			throw new LlmRequestError("LLM request failed", undefined, {
+				cause: error,
+				requestId,
+				retryable: true,
+			});
 		}
 
 		const actualTokens = Math.min(
@@ -93,8 +113,13 @@ export class UsageLimitedLlmService implements LlmService {
 			reservation.reservedTokens,
 		);
 		await this.quota.settle(reservation, actualTokens);
-		this.#log(request, "completed", reservation.reservedTokens, actualTokens);
-		return result;
+		this.#log(
+			lifecycleRequest,
+			"completed",
+			reservation.reservedTokens,
+			actualTokens,
+		);
+		return { ...result, requestId };
 	}
 
 	#log(
@@ -105,6 +130,7 @@ export class UsageLimitedLlmService implements LlmService {
 	): void {
 		this.options.logger?.({
 			accountRef: this.options.accountRef ?? "unknown",
+			requestId: request.requestId ?? "unknown",
 			model: request.model ?? "default",
 			status,
 			reservedTokens,
