@@ -2,13 +2,23 @@ import { describe, expect, it } from "vitest";
 
 import {
 	type ChatMessage,
+	isPlanApprovable,
 	type MessageKind,
 	messageAccessibleLabel,
+	type PlanFolder,
+	type PlanMessage,
+	planApprovalCopy,
+	planBlockReason,
+	planCreatedFolderCount,
+	planMoveCount,
 	upsertMessage,
 } from "./message-model";
 import {
+	buildApplySteps,
+	buildInvalidPlan,
 	buildSortFailure,
-	buildSortRoundTrip,
+	buildSortPlanSteps,
+	buildStalePlan,
 	buildUndoMessage,
 	type DriverStep,
 	runDriverSteps,
@@ -22,6 +32,11 @@ const ALL_KINDS: readonly MessageKind[] = [
 	"result",
 	"undo",
 	"failed",
+];
+
+const SAMPLE_FOLDERS: readonly PlanFolder[] = [
+	{ name: "Photos", isNew: true, files: ["a.jpg", "b.jpg", "c.jpg"] },
+	{ name: "Contracts", isNew: false, files: ["lease.pdf"] },
 ];
 
 /** One sample message per kind, used to prove the exhaustive helpers cover all. */
@@ -40,11 +55,12 @@ const SAMPLES: Record<MessageKind, ChatMessage> = {
 		kind: "plan",
 		id: "a",
 		createdAt: 0,
-		summary: "42 files into 6 folders",
-		fileCount: 42,
-		folderCount: 6,
-		createdFolderCount: 4,
-		folders: [{ name: "Photos", fileCount: 7, isNew: true, examples: [] }],
+		summary: "4 files into 2 folders",
+		fileCount: 4,
+		folderCount: 2,
+		createdFolderCount: 1,
+		folders: SAMPLE_FOLDERS,
+		status: "ready",
 	},
 	result: {
 		kind: "result",
@@ -76,12 +92,31 @@ const SAMPLES: Record<MessageKind, ChatMessage> = {
 const kindsOf = (steps: readonly DriverStep[]): MessageKind[] =>
 	steps.map((step) => step.message.kind);
 
+const planStepOf = (steps: readonly DriverStep[]): PlanMessage => {
+	const step = steps.find((s) => s.message.kind === "plan")?.message;
+	if (step?.kind !== "plan") throw new Error("expected a plan step");
+	return step;
+};
+
 describe("message model helpers", () => {
 	it("produces a non-empty accessible label for every kind", () => {
 		for (const kind of ALL_KINDS) {
 			const label = messageAccessibleLabel(SAMPLES[kind]);
 			expect(label.length).toBeGreaterThan(0);
 		}
+	});
+
+	it("labels non-ready plans with their state for screen readers", () => {
+		const stale: PlanMessage = {
+			...SAMPLES.plan,
+			status: "stale",
+		} as PlanMessage;
+		expect(messageAccessibleLabel(stale)).toContain("out of date");
+		const invalid: PlanMessage = {
+			...SAMPLES.plan,
+			status: "invalid",
+		} as PlanMessage;
+		expect(messageAccessibleLabel(invalid)).toContain("needs attention");
 	});
 
 	it("appends a new message and replaces one with a matching id in place", () => {
@@ -100,51 +135,122 @@ describe("message model helpers", () => {
 	});
 });
 
-describe("mock sort driver", () => {
-	it("walks a sort request through pending → progress → plan → result", () => {
-		const steps = buildSortRoundTrip({
-			assistantId: "assistant-1",
-			resultId: "result-1",
-			now: 1000,
+describe("plan counts + approval copy", () => {
+	it("derives move and created-folder counts from the folders", () => {
+		expect(planMoveCount(SAMPLE_FOLDERS)).toBe(4);
+		expect(planCreatedFolderCount(SAMPLE_FOLDERS)).toBe(1);
+	});
+
+	it("states exact counts and the safety guarantee", () => {
+		const copy = planApprovalCopy(SAMPLE_FOLDERS);
+		expect(copy).toBe(
+			"Create 1 folder and move 4 files. Nothing is renamed, overwritten, or deleted.",
+		);
+	});
+
+	it("phrases the copy for existing-only destinations without a create clause", () => {
+		const existingOnly: PlanFolder[] = [
+			{ name: "Contracts", isNew: false, files: ["lease.pdf", "nda.pdf"] },
+		];
+		expect(planApprovalCopy(existingOnly)).toBe(
+			"Move 2 files into existing folders. Nothing is renamed, overwritten, or deleted.",
+		);
+	});
+
+	it("only allows a ready plan to be approved", () => {
+		expect(isPlanApprovable("ready")).toBe(true);
+		for (const status of ["stale", "invalid", "approved"] as const) {
+			expect(isPlanApprovable(status)).toBe(false);
+		}
+	});
+
+	it("gives a null block reason for ready and a message for the rest", () => {
+		expect(planBlockReason(SAMPLES.plan as PlanMessage)).toBeNull();
+		for (const status of ["stale", "invalid", "approved"] as const) {
+			const reason = planBlockReason({
+				...(SAMPLES.plan as PlanMessage),
+				status,
+			});
+			expect(reason?.length ?? 0).toBeGreaterThan(0);
+		}
+	});
+
+	it("prefers an explicit statusReason over the default", () => {
+		const reason = planBlockReason({
+			...(SAMPLES.plan as PlanMessage),
+			status: "stale",
+			statusReason: "Custom reason.",
 		});
+		expect(reason).toBe("Custom reason.");
+	});
+});
+
+describe("mock sort driver", () => {
+	it("walks a sort request through pending → progress → plan and stops (no auto-apply)", () => {
+		const steps = buildSortPlanSteps({ assistantId: "assistant-1", now: 1000 });
 
 		const distinct = kindsOf(steps).filter(
 			(kind, index, all) => all.indexOf(kind) === index,
 		);
-		expect(distinct).toEqual(["pending", "progress", "plan", "result"]);
+		expect(distinct).toEqual(["pending", "progress", "plan"]);
 
-		// Every non-terminal state shares one evolving assistant id; the result
-		// is a distinct, appended message.
-		const beforeResult = steps.slice(0, -1);
-		expect(beforeResult.every((s) => s.message.id === "assistant-1")).toBe(
-			true,
-		);
-		expect(steps.at(-1)?.message.id).toBe("result-1");
+		// Every step shares one evolving assistant id, ending at a ready plan.
+		expect(steps.every((s) => s.message.id === "assistant-1")).toBe(true);
+		expect(steps.at(-1)?.message.kind).toBe("plan");
+		expect(planStepOf(steps).status).toBe("ready");
+
+		// No result is emitted — approval is the user's job now (W13).
+		expect(kindsOf(steps)).not.toContain("result");
 
 		// Delays are non-negative so the runner schedules monotonically.
 		expect(steps.every((s) => s.delayMs >= 0)).toBe(true);
 	});
 
-	it("keeps plan and result totals internally consistent", () => {
-		const steps = buildSortRoundTrip({
-			assistantId: "a",
-			resultId: "r",
-			now: 0,
-		});
-		const plan = steps.find((s) => s.message.kind === "plan")?.message;
-		const result = steps.find((s) => s.message.kind === "result")?.message;
-		if (plan?.kind !== "plan" || result?.kind !== "result") {
-			throw new Error("expected a plan and a result step");
-		}
-
-		const summed = plan.folders.reduce((total, f) => total + f.fileCount, 0);
+	it("keeps a plan's denormalised summary counts consistent with its folders", () => {
+		const plan = planStepOf(buildSortPlanSteps({ assistantId: "a", now: 0 }));
+		const summed = plan.folders.reduce((t, f) => t + f.files.length, 0);
 		expect(summed).toBe(plan.fileCount);
 		expect(plan.folderCount).toBe(plan.folders.length);
 		expect(plan.createdFolderCount).toBe(
 			plan.folders.filter((f) => f.isNew).length,
 		);
-		expect(result.movedCount).toBe(plan.fileCount);
-		expect(result.createdFolderCount).toBe(plan.createdFolderCount);
+		// A believably long group so the card's expandable full list matters.
+		expect(
+			Math.max(...plan.folders.map((f) => f.files.length)),
+		).toBeGreaterThan(5);
+	});
+
+	it("applies an approved plan into progress → result with matching counts", () => {
+		const plan = planStepOf(buildSortPlanSteps({ assistantId: "a", now: 0 }));
+		const steps = buildApplySteps({
+			applyId: "apply-1",
+			now: 0,
+			folders: plan.folders,
+		});
+		expect(kindsOf(steps)).toEqual(["progress", "result"]);
+		const result = steps.at(-1)?.message;
+		if (result?.kind !== "result") throw new Error("expected a result");
+		expect(result.movedCount).toBe(planMoveCount(plan.folders));
+		expect(result.createdFolderCount).toBe(
+			planCreatedFolderCount(plan.folders),
+		);
+		expect(result.folderCount).toBe(plan.folders.length);
+	});
+
+	it("builds stale and invalid plans that cannot be approved", () => {
+		const stale = buildStalePlan({ id: "s", now: 0 });
+		expect(stale.status).toBe("stale");
+		expect(isPlanApprovable(stale.status)).toBe(false);
+		expect(stale.statusReason).toBeTruthy();
+
+		const invalid = buildInvalidPlan({ id: "i", now: 0 });
+		expect(invalid.status).toBe("invalid");
+		expect(isPlanApprovable(invalid.status)).toBe(false);
+		expect(invalid.statusReason).toBeTruthy();
+
+		// Both still carry the full move set so the card can render every move.
+		expect(planMoveCount(stale.folders)).toBeGreaterThan(0);
+		expect(planMoveCount(invalid.folders)).toBeGreaterThan(0);
 	});
 
 	it("walks a failed request through pending → progress → failed", () => {
@@ -167,11 +273,7 @@ describe("mock sort driver", () => {
 	});
 
 	it("replays every step in order and reports completion", async () => {
-		const steps = buildSortRoundTrip({
-			assistantId: "a",
-			resultId: "r",
-			now: 0,
-		});
+		const steps = buildSortPlanSteps({ assistantId: "a", now: 0 });
 		const seen: MessageKind[] = [];
 		let done = false;
 

@@ -8,11 +8,15 @@ import { MessageCard } from "./message-card";
 import {
 	type ChatMessage,
 	createMessageId,
+	type PlanMessage,
 	upsertMessage,
 } from "./message-model";
 import {
+	buildApplySteps,
+	buildInvalidPlan,
 	buildSortFailure,
-	buildSortRoundTrip,
+	buildSortPlanSteps,
+	buildStalePlan,
 	buildUndoMessage,
 	type DriverHandle,
 	runDriverSteps,
@@ -97,6 +101,19 @@ export function ChatPane({
 		[messages],
 	);
 
+	// The most recent plan card still awaiting approval — drives the dev-only
+	// "mark stale" affordance (mirroring W11 invalidating a prepared snapshot).
+	const latestReadyPlan = useMemo(
+		() =>
+			[...messages]
+				.reverse()
+				.find(
+					(message): message is PlanMessage =>
+						message.kind === "plan" && message.status === "ready",
+				),
+		[messages],
+	);
+
 	const apply = (message: ChatMessage) =>
 		setMessages((prev) => upsertMessage(prev, message));
 
@@ -116,11 +133,24 @@ export function ChatPane({
 			text,
 		});
 		setInput("");
+		// Stops at a `ready` plan; the plan card owns approval from here (W13).
 		runSteps(
-			buildSortRoundTrip({
-				assistantId: createMessageId(),
-				resultId: createMessageId(),
+			buildSortPlanSteps({ assistantId: createMessageId(), now: Date.now() }),
+		);
+	};
+
+	// Approve a reviewed plan. Only a `ready` plan can be approved; the plan card
+	// disables the control otherwise, and this guard is the defence in depth. The
+	// card is locked to `approved` first (preventing a double-submit) and then the
+	// apply simulation runs, standing in for the journaled apply engine (W14).
+	const approvePlan = (plan: PlanMessage) => {
+		if (isRunning || plan.status !== "ready") return;
+		apply({ ...plan, status: "approved" });
+		runSteps(
+			buildApplySteps({
+				applyId: createMessageId(),
 				now: Date.now(),
+				folders: plan.folders,
 			}),
 		);
 	};
@@ -136,6 +166,30 @@ export function ChatPane({
 		runSteps(
 			buildSortFailure({ assistantId: createMessageId(), now: Date.now() }),
 		);
+	};
+
+	// Invalidate the pending plan in place, as W11 marks a prepared snapshot
+	// unusable when the folder changes underneath it. Approval is now blocked.
+	const markPlanStale = () => {
+		if (isRunning || !latestReadyPlan) return;
+		apply(
+			buildStalePlan({
+				id: latestReadyPlan.id,
+				now: latestReadyPlan.createdAt,
+				folders: latestReadyPlan.folders,
+			}),
+		);
+	};
+
+	const simulateInvalidPlan = () => {
+		if (isRunning) return;
+		apply({
+			kind: "user",
+			id: createMessageId(),
+			createdAt: Date.now(),
+			text: "Sort my Downloads",
+		});
+		apply(buildInvalidPlan({ id: createMessageId(), now: Date.now() }));
 	};
 
 	const simulateUndo = () => {
@@ -181,7 +235,7 @@ export function ChatPane({
 						>
 							{messages.map((message) => (
 								<li key={message.id}>
-									<MessageCard message={message} />
+									<MessageCard message={message} onApprovePlan={approvePlan} />
 								</li>
 							))}
 						</ol>
@@ -224,7 +278,10 @@ export function ChatPane({
 			<DevToolbar
 				isRunning={isRunning}
 				canUndo={Boolean(lastResult)}
+				canMarkStale={Boolean(latestReadyPlan)}
 				onSort={() => startSort(DEFAULT_REQUEST)}
+				onMarkStale={markPlanStale}
+				onInvalidPlan={simulateInvalidPlan}
 				onFailure={simulateFailure}
 				onUndo={simulateUndo}
 			/>
@@ -247,20 +304,28 @@ function EmptyState() {
 }
 
 /**
- * DEV-ONLY controls. This whole block is scaffolding for W12 and is expected to
- * be removed once the real IPC-backed sort flow (W9+) and plan approval (W13)
- * land. It exists only so every message state can be exercised in `dev:web`.
+ * DEV-ONLY controls. This whole block is scaffolding and is expected to be
+ * removed once the real IPC-backed sort flow (W9+) and journaled apply (W14)
+ * land. It exists only so every message state — including the W13 plan review
+ * states (ready / stale / invalid) — can be exercised in `dev:web`. Approval
+ * itself is driven from the plan card, not here.
  */
 function DevToolbar({
 	isRunning,
 	canUndo,
+	canMarkStale,
 	onSort,
+	onMarkStale,
+	onInvalidPlan,
 	onFailure,
 	onUndo,
 }: {
 	isRunning: boolean;
 	canUndo: boolean;
+	canMarkStale: boolean;
 	onSort: () => void;
+	onMarkStale: () => void;
+	onInvalidPlan: () => void;
 	onFailure: () => void;
 	onUndo: () => void;
 }) {
@@ -278,6 +343,24 @@ function DevToolbar({
 				disabled={isRunning}
 			>
 				Simulate sort
+			</Button>
+			<Button
+				type="button"
+				variant="secondary"
+				size="sm"
+				onClick={onMarkStale}
+				disabled={isRunning || !canMarkStale}
+			>
+				Mark plan stale
+			</Button>
+			<Button
+				type="button"
+				variant="secondary"
+				size="sm"
+				onClick={onInvalidPlan}
+				disabled={isRunning}
+			>
+				Simulate invalid plan
 			</Button>
 			<Button
 				type="button"
