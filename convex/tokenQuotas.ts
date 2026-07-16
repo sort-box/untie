@@ -113,6 +113,11 @@ export const settle = mutation({
 			}
 			return;
 		}
+		if (actualTokens > reservation.reservedTokens) {
+			throw new ConvexError({
+				code: "ACTUAL_TOKENS_EXCEED_RESERVATION",
+			});
+		}
 
 		const quota = await getQuota(
 			ctx,

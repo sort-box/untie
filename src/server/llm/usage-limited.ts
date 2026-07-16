@@ -21,10 +21,26 @@ export interface TokenQuotaStore {
 	): Promise<void>;
 }
 
+export type LlmGatewayLogEvent = {
+	accountRef: string;
+	model: string;
+	status: "completed" | "failed" | "quota_exhausted";
+	reservedTokens: number;
+	actualTokens?: number;
+};
+
+export type LlmGatewayLogger = (event: LlmGatewayLogEvent) => void;
+
+export type UsageLimitedLlmServiceOptions = {
+	accountRef?: string;
+	logger?: LlmGatewayLogger;
+};
+
 export class UsageLimitedLlmService implements LlmService {
 	constructor(
 		private readonly service: LlmService,
 		private readonly quota: TokenQuotaStore,
+		private readonly options: UsageLimitedLlmServiceOptions = {},
 	) {}
 
 	async generateText(request: LlmRequest): Promise<LlmResult<string>> {
@@ -53,21 +69,47 @@ export class UsageLimitedLlmService implements LlmService {
 			request,
 			options.additionalCharacters,
 		);
-		const reservation = await this.quota.reserve(reservedTokens);
+		let reservation: TokenQuotaReservation;
+		try {
+			reservation = await this.quota.reserve(reservedTokens);
+		} catch (error) {
+			if (error instanceof LlmAccountQuotaError) {
+				this.#log(request, "quota_exhausted", reservedTokens);
+			}
+			throw error;
+		}
 
 		let result: LlmResult<T>;
 		try {
 			result = await generate();
 		} catch (error) {
 			await this.quota.settle(reservation, 0);
+			this.#log(request, "failed", reservation.reservedTokens, 0);
 			throw error;
 		}
 
-		await this.quota.settle(
-			reservation,
+		const actualTokens = Math.min(
 			result.usage?.totalTokens ?? reservation.reservedTokens,
+			reservation.reservedTokens,
 		);
+		await this.quota.settle(reservation, actualTokens);
+		this.#log(request, "completed", reservation.reservedTokens, actualTokens);
 		return result;
+	}
+
+	#log(
+		request: LlmRequest,
+		status: LlmGatewayLogEvent["status"],
+		reservedTokens: number,
+		actualTokens?: number,
+	): void {
+		this.options.logger?.({
+			accountRef: this.options.accountRef ?? "unknown",
+			model: request.model ?? "default",
+			status,
+			reservedTokens,
+			...(actualTokens === undefined ? {} : { actualTokens }),
+		});
 	}
 }
 
