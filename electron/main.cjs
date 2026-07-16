@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { Readable } = require("node:stream");
+const { privacyLogger } = require("../privacy-log.cjs");
 const { pathToFileURL } = require("node:url");
 const { registerCapabilityHandlers } = require("./capabilities/registry.cjs");
 const {
@@ -172,7 +173,7 @@ async function startProductionServer() {
 			}
 			Readable.fromWeb(response.body).pipe(outgoing);
 		} catch (error) {
-			console.error(error);
+			privacyLogger.reportCrash("production_request_failed", error);
 			outgoing.writeHead(500);
 			outgoing.end("Internal Server Error");
 		}
@@ -258,7 +259,7 @@ app.whenReady().then(async () => {
 				.map((grant) => indexSyncEngine.syncGrant(grant.grantId)),
 		);
 	} catch (error) {
-		console.error("Untie could not open its local stores.", error);
+		privacyLogger.reportCrash("local_store_startup_failed", error);
 		dialog.showErrorBox(
 			"Untie could not start safely",
 			"Your local data could not be opened. Untie did not delete or reset it. Please update or contact support before trying again.",
