@@ -18,6 +18,11 @@ const errorCodes = Object.freeze([
 	"NOT_IMPLEMENTED",
 	"INTERNAL",
 	"UNKNOWN_CAPABILITY",
+	"UNAUTHORIZED",
+	"REVOKED_GRANT",
+	"STALE_REFERENCE",
+	"NOT_CONTAINED",
+	"PATH_SUPPLIED",
 ]);
 
 function validationError(message) {

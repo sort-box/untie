@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
 const { createCapabilityRegistry } = require("./registry.cjs");
+const { CapabilityAuthorizationError } = require("./authorization.cjs");
 
 describe("capability registry", () => {
 	it("validates requests and never passes renderer paths to a handler", async () => {
@@ -23,12 +24,68 @@ describe("capability registry", () => {
 		expect(result).toEqual({
 			ok: false,
 			error: {
-				code: "INVALID_REQUEST",
-				message: "Capability request failed validation",
-				details: {
-					capability: "scanFolder",
-					reason: "request contains unexpected field 'path'",
+				code: "PATH_SUPPLIED",
+				message: "Filesystem paths are not capabilities",
+			},
+		});
+		expect(called).toBe(false);
+	});
+
+	it("routes handlers through authorization and preserves structured rejection", async () => {
+		let called = false;
+		const registry = createCapabilityRegistry(
+			{
+				openItem: async () => {
+					called = true;
+					return { opened: true };
 				},
+			},
+			{
+				authorize: () => {
+					throw new CapabilityAuthorizationError(
+						"REVOKED_GRANT",
+						"The backing folder grant is missing or revoked",
+					);
+				},
+			},
+		);
+
+		await expect(
+			registry.invoke(undefined, {
+				requestId: "authorize",
+				capability: "openItem",
+				input: { itemId: "item-1" },
+			}),
+		).resolves.toEqual({
+			ok: false,
+			error: {
+				code: "REVOKED_GRANT",
+				message: "The backing folder grant is missing or revoked",
+			},
+		});
+		expect(called).toBe(false);
+	});
+
+	it("rejects a raw path placed in an opaque ID field before the handler", async () => {
+		let called = false;
+		const registry = createCapabilityRegistry({
+			openItem: async () => {
+				called = true;
+				return { opened: true };
+			},
+		});
+
+		await expect(
+			registry.invoke(undefined, {
+				requestId: "raw-path-id",
+				capability: "openItem",
+				input: { itemId: "/Users/alice/private.txt" },
+			}),
+		).resolves.toEqual({
+			ok: false,
+			error: {
+				code: "PATH_SUPPLIED",
+				message: "Filesystem paths are not capabilities",
 			},
 		});
 		expect(called).toBe(false);

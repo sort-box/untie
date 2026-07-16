@@ -4,7 +4,12 @@ export type CapabilityErrorCode =
 	| "CANCELLED"
 	| "NOT_IMPLEMENTED"
 	| "INTERNAL"
-	| "UNKNOWN_CAPABILITY";
+	| "UNKNOWN_CAPABILITY"
+	| "UNAUTHORIZED"
+	| "REVOKED_GRANT"
+	| "STALE_REFERENCE"
+	| "NOT_CONTAINED"
+	| "PATH_SUPPLIED";
 
 export type CapabilityError = {
 	code: CapabilityErrorCode;

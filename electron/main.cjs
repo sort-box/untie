@@ -5,6 +5,10 @@ const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pathToFileURL } = require("node:url");
 const { registerCapabilityHandlers } = require("./capabilities/registry.cjs");
+const {
+	CapabilityReferenceStore,
+	createCapabilityAuthorizer,
+} = require("./capabilities/authorization.cjs");
 const { initializeLocalStores } = require("./local-store.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
@@ -12,6 +16,10 @@ const PRODUCTION_PORT = 3210;
 
 let productionServer;
 let unregisterCapabilityHandlers;
+const capabilityReferenceStore = new CapabilityReferenceStore();
+const capabilityAuthorizer = createCapabilityAuthorizer({
+	store: capabilityReferenceStore,
+});
 
 const capabilityImplementations = {
 	ping: async ({ message }) => ({ message }),
@@ -163,6 +171,7 @@ app.whenReady().then(async () => {
 	unregisterCapabilityHandlers = registerCapabilityHandlers(
 		ipcMain,
 		capabilityImplementations,
+		capabilityAuthorizer,
 	);
 	await createWindow();
 

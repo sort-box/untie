@@ -1,4 +1,8 @@
 const { capabilityNames, contracts } = require("./contracts.cjs");
+const {
+	CapabilityAuthorizationError,
+	containsRendererPath,
+} = require("./authorization.cjs");
 
 const INVOKE_CHANNEL = "untie:capability:invoke";
 const CANCEL_CHANNEL = "untie:capability:cancel";
@@ -10,7 +14,7 @@ function failure(code, message, details) {
 	};
 }
 
-function createCapabilityRegistry(implementations = {}) {
+function createCapabilityRegistry(implementations = {}, authorizer) {
 	const activeRequests = new Map();
 
 	async function invoke(_event, envelope) {
@@ -29,6 +33,9 @@ function createCapabilityRegistry(implementations = {}) {
 			return failure("UNKNOWN_CAPABILITY", "Unknown capability", {
 				capability,
 			});
+		}
+		if (containsRendererPath(envelope.input)) {
+			return failure("PATH_SUPPLIED", "Filesystem paths are not capabilities");
 		}
 		const parsed = contracts[capability].request(envelope.input);
 		if (!parsed.ok) {
@@ -50,7 +57,12 @@ function createCapabilityRegistry(implementations = {}) {
 		const controller = new AbortController();
 		activeRequests.set(requestId, controller);
 		try {
-			const output = await handler(parsed.value, { signal: controller.signal });
+			const authorization =
+				authorizer?.authorize(capability, parsed.value) ?? {};
+			const output = await handler(parsed.value, {
+				signal: controller.signal,
+				authorization,
+			});
 			if (controller.signal.aborted) {
 				return failure("CANCELLED", "Request was cancelled");
 			}
@@ -61,9 +73,12 @@ function createCapabilityRegistry(implementations = {}) {
 						capability,
 						reason: response.message,
 					});
-		} catch {
+		} catch (error) {
 			if (controller.signal.aborted) {
 				return failure("CANCELLED", "Request was cancelled");
+			}
+			if (error instanceof CapabilityAuthorizationError) {
+				return failure(error.code, error.message, error.details);
 			}
 			return failure("INTERNAL", "Capability failed");
 		} finally {
@@ -78,8 +93,8 @@ function createCapabilityRegistry(implementations = {}) {
 	return { invoke, cancel };
 }
 
-function registerCapabilityHandlers(ipcMain, implementations) {
-	const registry = createCapabilityRegistry(implementations);
+function registerCapabilityHandlers(ipcMain, implementations, authorizer) {
+	const registry = createCapabilityRegistry(implementations, authorizer);
 	ipcMain.handle(INVOKE_CHANNEL, registry.invoke);
 	ipcMain.on(CANCEL_CHANNEL, registry.cancel);
 	return () => {
