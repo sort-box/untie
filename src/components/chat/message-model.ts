@@ -13,13 +13,26 @@
 export interface PlanFolder {
 	/** Human-readable destination folder name (never a filesystem path). */
 	readonly name: string;
-	/** How many files the plan routes into this folder. */
-	readonly fileCount: number;
 	/** True when Untie would create the folder; false for an existing one. */
 	readonly isNew: boolean;
-	/** A few representative filenames, shown before the full list expands. */
-	readonly examples: readonly string[];
+	/**
+	 * The COMPLETE set of files the plan routes into this destination — display
+	 * names only, never filesystem paths. Every move is reviewable (W13), so this
+	 * is the full list, not a sample; the count derives from `files.length`.
+	 */
+	readonly files: readonly string[];
 }
+
+/**
+ * Whether a plan can be approved.
+ *
+ * Only a `ready` plan may be approved. The others mirror the states the
+ * production prepared-plan store (W11) can put a snapshot in: `stale` when the
+ * bound snapshot became unusable (edit, expiry, grant change, or a source file
+ * changed), `invalid` when the deterministic validator rejected the plan, and
+ * `approved` once the user has committed to it (terminal; prevents re-approval).
+ */
+export type PlanStatus = "ready" | "stale" | "invalid" | "approved";
 
 interface BaseMessage {
 	/** Stable id; assistant status messages keep one id as they evolve. */
@@ -48,7 +61,7 @@ export interface ProgressMessage extends BaseMessage {
 	readonly total: number;
 }
 
-/** A reviewable sort plan (summary → grouped destinations). */
+/** A reviewable sort plan (summary → grouped destinations → full move set). */
 export interface PlanMessage extends BaseMessage {
 	readonly kind: "plan";
 	readonly summary: string;
@@ -56,6 +69,13 @@ export interface PlanMessage extends BaseMessage {
 	readonly folderCount: number;
 	readonly createdFolderCount: number;
 	readonly folders: readonly PlanFolder[];
+	/** Approval gate: only a `ready` plan may be approved. */
+	readonly status: PlanStatus;
+	/**
+	 * Optional human-readable reason a non-`ready` plan can't be approved. When
+	 * absent, `planBlockReason` supplies a sensible default for the status.
+	 */
+	readonly statusReason?: string;
 }
 
 /** A completed sort, summarised for the transcript. */
@@ -117,8 +137,17 @@ export function messageAccessibleLabel(message: ChatMessage): string {
 			return message.label;
 		case "progress":
 			return `${message.label} (${message.current} of ${message.total})`;
-		case "plan":
-			return `Sort plan: ${message.summary}`;
+		case "plan": {
+			const state =
+				message.status === "stale"
+					? " (out of date)"
+					: message.status === "invalid"
+						? " (needs attention)"
+						: message.status === "approved"
+							? " (approved)"
+							: "";
+			return `Sort plan${state}: ${message.summary}`;
+		}
 		case "result":
 			return `Sort complete: ${message.summary}`;
 		case "undo":
@@ -127,6 +156,69 @@ export function messageAccessibleLabel(message: ChatMessage): string {
 			return `Failed: ${message.title}. ${message.detail}`;
 		default:
 			return assertNever(message);
+	}
+}
+
+/** Pluralize `noun` against `count` (naive "+s"; enough for the plan copy). */
+function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** Total number of file moves across every destination in a plan. */
+export function planMoveCount(folders: readonly PlanFolder[]): number {
+	return folders.reduce((total, folder) => total + folder.files.length, 0);
+}
+
+/** How many destinations the plan would create (new folders only). */
+export function planCreatedFolderCount(folders: readonly PlanFolder[]): number {
+	return folders.reduce((count, folder) => count + (folder.isNew ? 1 : 0), 0);
+}
+
+/** Only a `ready` plan may be approved. */
+export function isPlanApprovable(status: PlanStatus): boolean {
+	return status === "ready";
+}
+
+/**
+ * The exact-counts approval line (PRD §8, S3). Counts are derived from the
+ * plan's own move set — never hardcoded — so the copy can never disagree with
+ * what would actually happen. It always restates the v1 safety guarantee.
+ */
+export function planApprovalCopy(folders: readonly PlanFolder[]): string {
+	const moves = plural(planMoveCount(folders), "file");
+	const created = planCreatedFolderCount(folders);
+	const guarantee = "Nothing is renamed, overwritten, or deleted.";
+	if (created === 0) {
+		return `Move ${moves} into existing folders. ${guarantee}`;
+	}
+	return `Create ${plural(created, "folder")} and move ${moves}. ${guarantee}`;
+}
+
+/**
+ * Why a plan can't be approved, or `null` when it is `ready`. Falls back to a
+ * status-specific default when the message carries no explicit `statusReason`.
+ */
+export function planBlockReason(message: PlanMessage): string | null {
+	switch (message.status) {
+		case "ready":
+			return null;
+		case "stale":
+			return (
+				message.statusReason ??
+				"This plan is out of date — the folder changed after it was prepared. Regenerate to review the current files."
+			);
+		case "invalid":
+			return (
+				message.statusReason ??
+				"This plan didn't pass Untie's safety checks, so it can't be approved."
+			);
+		case "approved":
+			return (
+				message.statusReason ??
+				"This plan has already been approved — there's nothing left to review."
+			);
+		default:
+			return assertNever(message.status);
 	}
 }
 

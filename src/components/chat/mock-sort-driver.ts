@@ -1,17 +1,29 @@
 // ────────────────────────────────────────────────────────────────────────────
 // DEV / MOCK SCAFFOLDING — NOT PRODUCTION CODE.
 //
-// This module fakes a sort request so the W12 chat shell can round-trip through
+// This module fakes a sort request so the chat shell can round-trip through
 // every message state with no Electron IPC, no backend, and no LLM call. It is
-// deliberately self-contained so W9+ (real capability IPC) and W13 (real plan
-// review & approval) can delete it wholesale and swap in live data.
+// deliberately self-contained so the real capability IPC (W9+) and journaled
+// apply (W14) can delete it wholesale and swap in live data.
+//
+// W13 note: a plan no longer auto-applies. `buildSortPlanSteps` stops at a
+// `ready` plan and waits for the user to approve it in the plan card; approval
+// then runs `buildApplySteps`. `buildStalePlan`/`buildInvalidPlan` stand in for
+// the prepared-plan store (W11) marking a snapshot unusable — the plan card must
+// refuse to approve them.
 //
 // `build*` functions are pure (they take a clock via `now`) so the message-model
 // transitions can be asserted in unit tests. `runDriverSteps` is the only side
 // effect: it replays the scripted steps on real timers.
 // ────────────────────────────────────────────────────────────────────────────
 
-import type { ChatMessage, PlanFolder } from "./message-model";
+import {
+	type ChatMessage,
+	type PlanFolder,
+	type PlanMessage,
+	planCreatedFolderCount,
+	planMoveCount,
+} from "./message-model";
 
 /** One scripted transition: apply `message` after waiting `delayMs`. */
 export interface DriverStep {
@@ -26,74 +38,134 @@ export interface DriverHandle {
 	cancel: () => void;
 }
 
-/** A believable mock plan for "Sort my Downloads" — 42 files, 6 folders. */
+/**
+ * A believable mock plan for "Sort my Downloads" — 42 files across 6 folders,
+ * with the COMPLETE file list per destination so the plan card can render every
+ * move (some groups are long on purpose, to exercise the expandable full list).
+ */
 const MOCK_PLAN_FOLDERS: readonly PlanFolder[] = [
 	{
 		name: "Invoices & Receipts",
-		fileCount: 9,
 		isNew: false,
-		examples: ["acme-invoice-2026.pdf", "receipt-groceries-apr.pdf"],
+		files: [
+			"acme-invoice-2026.pdf",
+			"receipt-groceries-apr.pdf",
+			"aws-invoice-march.pdf",
+			"receipt-pharmacy.pdf",
+			"electricity-bill-q1.pdf",
+			"invoice-freelance-482.pdf",
+			"receipt-hardware-store.pdf",
+			"phone-bill-may.pdf",
+			"receipt-coffee.pdf",
+		],
 	},
 	{
 		name: "Screenshots",
-		fileCount: 14,
 		isNew: true,
-		examples: [
+		files: [
 			"Screenshot 2026-05-01 at 09.14.png",
 			"Screenshot 2026-05-03.png",
+			"Screenshot 2026-05-04 at 14.22.png",
+			"Screenshot 2026-05-07.png",
+			"Screenshot 2026-05-09 at 08.01.png",
+			"Screenshot 2026-05-11.png",
+			"Screenshot 2026-05-12 at 17.45.png",
+			"Screenshot 2026-05-15.png",
+			"Screenshot 2026-05-18 at 11.30.png",
+			"Screenshot 2026-05-20.png",
+			"Screenshot 2026-05-22 at 19.12.png",
+			"Screenshot 2026-05-24.png",
+			"Screenshot 2026-05-27 at 07.55.png",
+			"Screenshot 2026-05-29.png",
 		],
 	},
 	{
 		name: "Installers",
-		fileCount: 6,
 		isNew: true,
-		examples: ["Figma-124.dmg", "zoom-installer.pkg"],
+		files: [
+			"Figma-124.dmg",
+			"zoom-installer.pkg",
+			"VSCode-darwin.dmg",
+			"node-v22.pkg",
+			"Docker.dmg",
+			"Slack-4.36.dmg",
+		],
 	},
 	{
 		name: "Contracts",
-		fileCount: 4,
 		isNew: false,
-		examples: ["apartment-lease-2025.pdf", "internship-agreement.pdf"],
+		files: [
+			"apartment-lease-2025.pdf",
+			"internship-agreement.pdf",
+			"nda-signed.pdf",
+			"freelance-contract-q2.pdf",
+		],
 	},
 	{
 		name: "Photos",
-		fileCount: 7,
 		isNew: true,
-		examples: ["IMG_2201.jpg", "IMG_2202.jpg"],
+		files: [
+			"IMG_2201.jpg",
+			"IMG_2202.jpg",
+			"IMG_2203.jpg",
+			"IMG_2204.jpg",
+			"IMG_2205.jpg",
+			"IMG_2206.jpg",
+			"IMG_2207.jpg",
+		],
 	},
 	{
 		name: "Misc PDFs",
-		fileCount: 2,
 		isNew: true,
-		examples: ["notes.pdf", "boarding-pass.pdf"],
+		files: ["notes.pdf", "boarding-pass.pdf"],
 	},
 ];
 
-const PROGRESS_TOTAL = 3;
+const SCAN_PROGRESS_TOTAL = 3;
 
-function sumFiles(folders: readonly PlanFolder[]): number {
-	return folders.reduce((total, folder) => total + folder.fileCount, 0);
+/** Denormalised summary fields for a `plan` message, derived from its folders. */
+function planSummaryFields(folders: readonly PlanFolder[]) {
+	const fileCount = planMoveCount(folders);
+	const folderCount = folders.length;
+	return {
+		fileCount,
+		folderCount,
+		createdFolderCount: planCreatedFolderCount(folders),
+		summary: `${fileCount} files into ${folderCount} folders`,
+	};
 }
 
-function countNew(folders: readonly PlanFolder[]): number {
-	return folders.filter((folder) => folder.isNew).length;
+/** Build a `plan` message for the given folders and approval status. */
+function buildPlanMessage(input: {
+	id: string;
+	now: number;
+	folders: readonly PlanFolder[];
+	status: PlanMessage["status"];
+	statusReason?: string;
+}): PlanMessage {
+	const { id, now, folders, status, statusReason } = input;
+	return {
+		kind: "plan",
+		id,
+		createdAt: now,
+		...planSummaryFields(folders),
+		folders,
+		status,
+		...(statusReason ? { statusReason } : {}),
+	};
 }
 
 /**
  * Happy-path sort simulation: one assistant status message evolves
- * `pending` → `progress` (×N) → `plan` in place, then a separate `result`
- * message is appended (standing in for a W13 approval that is auto-granted here).
+ * `pending` → `progress` (×N) → `plan` (`ready`) in place, then STOPS. The plan
+ * card owns approval from here (W13) — apply runs only on the user's approval.
  */
-export function buildSortRoundTrip(input: {
+export function buildSortPlanSteps(input: {
 	assistantId: string;
-	resultId: string;
 	now: number;
+	folders?: readonly PlanFolder[];
 }): DriverStep[] {
-	const { assistantId, resultId, now } = input;
-	const folders = MOCK_PLAN_FOLDERS;
-	const fileCount = sumFiles(folders);
-	const folderCount = folders.length;
-	const createdFolderCount = countNew(folders);
+	const { assistantId, now, folders = MOCK_PLAN_FOLDERS } = input;
 
 	const steps: DriverStep[] = [
 		{
@@ -107,7 +179,7 @@ export function buildSortRoundTrip(input: {
 		},
 	];
 
-	for (let current = 1; current <= PROGRESS_TOTAL; current += 1) {
+	for (let current = 1; current <= SCAN_PROGRESS_TOTAL; current += 1) {
 		steps.push({
 			delayMs: 500,
 			message: {
@@ -116,39 +188,106 @@ export function buildSortRoundTrip(input: {
 				createdAt: now,
 				label: "Grouping files into folders",
 				current,
-				total: PROGRESS_TOTAL,
+				total: SCAN_PROGRESS_TOTAL,
 			},
 		});
 	}
 
 	steps.push({
 		delayMs: 650,
-		message: {
-			kind: "plan",
+		message: buildPlanMessage({
 			id: assistantId,
-			createdAt: now,
-			summary: `${fileCount} files into ${folderCount} folders`,
-			fileCount,
-			folderCount,
-			createdFolderCount,
+			now,
 			folders,
-		},
-	});
-
-	steps.push({
-		delayMs: 800,
-		message: {
-			kind: "result",
-			id: resultId,
-			createdAt: now,
-			summary: `Moved ${fileCount} files into ${folderCount} folders in Downloads. Nothing was renamed, overwritten, or deleted.`,
-			movedCount: fileCount,
-			folderCount,
-			createdFolderCount,
-		},
+			status: "ready",
+		}),
 	});
 
 	return steps;
+}
+
+/**
+ * Apply simulation, run when the user approves a `ready` plan: a determinate
+ * `progress` message evolves into the final `result`. The moved/created counts
+ * derive from the approved plan's own move set, so they always match the
+ * exact-counts copy the user approved.
+ */
+export function buildApplySteps(input: {
+	applyId: string;
+	now: number;
+	folders: readonly PlanFolder[];
+}): DriverStep[] {
+	const { applyId, now, folders } = input;
+	const movedCount = planMoveCount(folders);
+	const folderCount = folders.length;
+	const createdFolderCount = planCreatedFolderCount(folders);
+
+	return [
+		{
+			delayMs: 300,
+			message: {
+				kind: "progress",
+				id: applyId,
+				createdAt: now,
+				label: "Moving files into folders",
+				current: 1,
+				total: Math.max(movedCount, 1),
+			},
+		},
+		{
+			delayMs: 600,
+			message: {
+				kind: "result",
+				id: applyId,
+				createdAt: now,
+				summary: `Moved ${movedCount} files into ${folderCount} folders in Downloads. Nothing was renamed, overwritten, or deleted.`,
+				movedCount,
+				folderCount,
+				createdFolderCount,
+			},
+		},
+	];
+}
+
+/**
+ * A plan the user cannot approve because its snapshot went stale (in production,
+ * W11 marks a snapshot unusable after an edit, expiry, grant change, or a source
+ * file changing). Rendered immediately, with no scanning preamble.
+ */
+export function buildStalePlan(input: {
+	id: string;
+	now: number;
+	folders?: readonly PlanFolder[];
+}): PlanMessage {
+	const { id, now, folders = MOCK_PLAN_FOLDERS } = input;
+	return buildPlanMessage({
+		id,
+		now,
+		folders,
+		status: "stale",
+		statusReason:
+			"Downloads changed after this plan was prepared. Regenerate to review the current files.",
+	});
+}
+
+/**
+ * A plan the user cannot approve because the deterministic validator (W10)
+ * rejected it — e.g. a destination collision. Rendered immediately.
+ */
+export function buildInvalidPlan(input: {
+	id: string;
+	now: number;
+	folders?: readonly PlanFolder[];
+}): PlanMessage {
+	const { id, now, folders = MOCK_PLAN_FOLDERS } = input;
+	return buildPlanMessage({
+		id,
+		now,
+		folders,
+		status: "invalid",
+		statusReason:
+			"Two files would collide in “Screenshots”. Untie can't approve a plan until every move is valid.",
+	});
 }
 
 /**
@@ -178,7 +317,7 @@ export function buildSortFailure(input: {
 				createdAt: now,
 				label: "Grouping files into folders",
 				current: 1,
-				total: PROGRESS_TOTAL,
+				total: SCAN_PROGRESS_TOTAL,
 			},
 		},
 		{
