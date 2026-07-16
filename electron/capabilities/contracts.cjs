@@ -30,6 +30,8 @@ const errorCodes = Object.freeze([
 	"STALE_REFERENCE",
 	"NOT_CONTAINED",
 	"PATH_SUPPLIED",
+	"EXPIRED_ID",
+	"INVALIDATED_ID",
 ]);
 
 function validationError(message) {
@@ -95,6 +97,12 @@ const stringArray = (value) =>
 const scanNamedEntries = (value) =>
 	Array.isArray(value) &&
 	value.every((entry) => exactResponse({ name: nonEmptyString })(entry).ok);
+const scanFileEntries = (value) =>
+	Array.isArray(value) &&
+	value.every(
+		(entry) =>
+			exactResponse({ itemId: nonEmptyString, name: nonEmptyString })(entry).ok,
+	);
 const scanSkipReasons = Object.freeze([
 	"HIDDEN",
 	"SYMLINK_OR_ALIAS",
@@ -233,7 +241,7 @@ const contracts = Object.freeze({
 	scanFolder: {
 		request: opaqueIdRequest("grantId"),
 		response: exactResponse({
-			files: scanNamedEntries,
+			files: scanFileEntries,
 			candidateDestinations: scanNamedEntries,
 			skipped: scanSkippedEntries,
 		}),

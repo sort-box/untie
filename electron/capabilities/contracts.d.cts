@@ -9,7 +9,9 @@ export type CapabilityErrorCode =
 	| "REVOKED_GRANT"
 	| "STALE_REFERENCE"
 	| "NOT_CONTAINED"
-	| "PATH_SUPPLIED";
+	| "PATH_SUPPLIED"
+	| "EXPIRED_ID"
+	| "INVALIDATED_ID";
 
 export type CapabilityError = {
 	code: CapabilityErrorCode;
@@ -43,11 +45,12 @@ export type ScanSkipReason =
 	| "APP_DATA"
 	| "UNSUPPORTED_TYPE";
 export type ScanNamedEntry = { readonly name: string };
+export type ScanFileEntry = ScanNamedEntry & { readonly itemId: string };
 export type ScanSkippedEntry = ScanNamedEntry & {
 	readonly reason: ScanSkipReason;
 };
 export type ScanFolderResult = {
-	readonly files: ScanNamedEntry[];
+	readonly files: ScanFileEntry[];
 	readonly candidateDestinations: ScanNamedEntry[];
 	readonly skipped: ScanSkippedEntry[];
 };
