@@ -21,6 +21,7 @@
 		"desktop:dist": "bun run build && electron-builder",
 		"preview": "vite preview",
 		"test": "vitest run",
+		"spike:r2": "bun run src/server/llm/sort-plan-spike/runner.ts",
 		"typecheck": "tsc --noEmit",
 		"format": "biome format",
 		"lint": "biome lint",
