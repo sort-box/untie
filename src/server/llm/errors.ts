@@ -1,6 +1,7 @@
 export type LlmErrorCode =
 	| "INVALID_CONFIGURATION"
 	| "NOT_AUTHENTICATED"
+	| "SESSION_EXPIRED"
 	| "REQUEST_FAILED"
 	| "RATE_LIMITED"
 	| "ACCOUNT_TOKEN_QUOTA_EXCEEDED"
@@ -29,6 +30,12 @@ export class LlmAuthenticationError extends LlmError {
 			"Authentication is required to use the LLM service",
 			"NOT_AUTHENTICATED",
 		);
+	}
+}
+
+export class LlmSessionExpiredError extends LlmError {
+	constructor() {
+		super("The authenticated session has expired", "SESSION_EXPIRED");
 	}
 }
 
