@@ -1,5 +1,5 @@
 import type { LlmService } from "../types";
-import { buildSortPlanMessages } from "./prompt";
+import { buildSortPlanRequest } from "./prompt";
 import {
 	groundSortPlan,
 	sortPlanResponseSchema,
@@ -20,7 +20,7 @@ export async function generateSortPlan(
 	dependencies: GenerateSortPlanDependencies,
 ): Promise<SortPlan> {
 	const validated = validateGenerateSortPlanInput(input);
-	const messages = buildSortPlanMessages(validated);
+	const { messages } = buildSortPlanRequest(validated);
 	const result = await dependencies.service.generateObject({
 		model: SORT_PLAN_MODEL,
 		messages,
