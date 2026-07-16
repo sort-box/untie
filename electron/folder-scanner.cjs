@@ -105,8 +105,10 @@ function createFolderScanner({ appDataDirectory, fsApi = fs }) {
 				}
 
 				if (reason) skipped.push({ name, reason });
-				else if (entry.isFile()) files.push({ name });
-				else if (entry.isDirectory()) candidateDestinations.push({ name });
+				else if (entry.isFile()) {
+					const stat = await fsApi.promises.stat(entryPath);
+					files.push({ name, size: stat.size });
+				} else if (entry.isDirectory()) candidateDestinations.push({ name });
 				else skipped.push({ name, reason: "UNSUPPORTED_TYPE" });
 			}
 		} finally {

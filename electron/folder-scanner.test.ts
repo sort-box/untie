@@ -13,7 +13,7 @@ const {
 			folder: string,
 			options?: { signal?: AbortSignal },
 		) => Promise<{
-			files: { name: string }[];
+			files: { name: string; size: number }[];
 			candidateDestinations: { name: string }[];
 			skipped: { name: string; reason: string }[];
 		}>;
@@ -56,7 +56,7 @@ describe("safe top-level folder scanner", () => {
 		const result = await scanner.scanFolder(folder);
 
 		expect(result).toEqual({
-			files: [{ name: "report.pdf" }],
+			files: [{ name: "report.pdf", size: 6 }],
 			candidateDestinations: [{ name: "School" }],
 			skipped: [
 				{ name: ".secret", reason: "HIDDEN" },
