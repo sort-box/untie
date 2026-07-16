@@ -36,8 +36,9 @@ describe("local stores", () => {
 			"journal",
 			"chat",
 			"grants",
+			"preparedPlans",
 		]);
-		for (const store of ["db", "journal", "chat", "grants"]) {
+		for (const store of ["db", "journal", "chat", "grants", "preparedPlans"]) {
 			expect(manifest(root, store)).toEqual({
 				store,
 				version: store === "chat" || store === "grants" ? 2 : 1,
@@ -55,6 +56,11 @@ describe("local stores", () => {
 		);
 		expect(
 			fs.statSync(path.join(root, "chat", "attachments")).isDirectory(),
+		).toBe(true);
+		expect(
+			fs
+				.statSync(path.join(root, "preparedPlans", "prepared-plans.json"))
+				.isFile(),
 		).toBe(true);
 	});
 
