@@ -399,6 +399,241 @@ function createJournaledApplyEngine({
 		fsApi.unlinkSync(source);
 	}
 
+	function pathExists(candidate) {
+		try {
+			fsApi.lstatSync(candidate);
+			return true;
+		} catch (cause) {
+			if (cause?.code === "ENOENT" || cause?.code === "ENOTDIR") return false;
+			throw cause;
+		}
+	}
+
+	function sameIdentity(stat, expected) {
+		return stat.dev === expected?.dev && stat.ino === expected?.ino;
+	}
+
+	function sameContentFingerprint(stat, expected) {
+		return stat.size === expected?.size && stat.mtimeMs === expected?.mtimeMs;
+	}
+
+	function validateUndoBoundary(batch) {
+		let grant;
+		try {
+			grant = authorizer.resolveGrant(batch.grantId).canonicalPath;
+			fsApi.accessSync(grant, fs.constants.R_OK | fs.constants.W_OK);
+		} catch (cause) {
+			throw applyError(
+				"UNDO_UNAVAILABLE",
+				"The folder grant is unavailable for undo",
+				cause,
+				batch.id,
+			);
+		}
+		for (const item of batch.items) {
+			const candidates =
+				item.type === "move" ? [item.source, item.target] : [item.path];
+			for (const candidate of candidates) {
+				if (
+					typeof candidate !== "string" ||
+					!path.isAbsolute(candidate) ||
+					path.relative(grant, candidate) === ".." ||
+					path.relative(grant, candidate).startsWith(`..${path.sep}`) ||
+					path.isAbsolute(path.relative(grant, candidate))
+				)
+					throw applyError(
+						"UNDO_UNAVAILABLE",
+						"A journal item is outside the folder grant",
+						undefined,
+						batch.id,
+					);
+				const parent = path.dirname(candidate);
+				if (pathExists(parent)) {
+					let canonicalParent;
+					try {
+						canonicalParent = fsApi.realpathSync
+							.native(parent)
+							.normalize("NFC");
+					} catch (cause) {
+						throw applyError(
+							"UNDO_UNAVAILABLE",
+							"An undo path is unavailable",
+							cause,
+							batch.id,
+						);
+					}
+					if (
+						canonicalParent !== grant &&
+						path.dirname(canonicalParent) !== grant
+					)
+						throw applyError(
+							"UNDO_UNAVAILABLE",
+							"An undo path escaped the folder grant",
+							undefined,
+							batch.id,
+						);
+				}
+			}
+		}
+	}
+
+	function markUndoFailure(item, reason) {
+		item.state = "revert_conflict";
+		item.undoOutcome =
+			reason === "source_missing" ? "already_moved_away" : "conflict";
+		item.reason = reason;
+	}
+
+	function undo(batchId) {
+		const batch = journal.read(batchId);
+		if (batch.state !== "applied")
+			throw applyError(
+				"UNDO_NOT_AVAILABLE",
+				"This operation is not available to undo",
+				undefined,
+				batch.id,
+			);
+		// This is deliberately a complete read-only authorization pass. No journal
+		// transition or filesystem mutation is allowed when the grant is unavailable.
+		try {
+			validateUndoBoundary(batch);
+		} catch {
+			batch.state = "needs_attention";
+			batch.trigger = "user_undo";
+			batch.reason = "unavailable";
+			batch.updatedAt = now();
+			journal.persist(batch);
+			return {
+				batchId: batch.id,
+				state: batch.state,
+				outcome: "unavailable",
+				files: [],
+				folders: [],
+			};
+		}
+		batch.state = "rolling_back";
+		batch.trigger = "user_undo";
+		batch.updatedAt = now();
+		journal.persist(batch);
+		crashPoint("after_undo_started", { batchId: batch.id });
+
+		const moveOutcomes = [];
+		for (const item of [...batch.items].reverse()) {
+			if (item.type !== "move" || item.state !== "moved") continue;
+			item.state = "reverting";
+			batch.updatedAt = now();
+			journal.persist(batch);
+			crashPoint("after_revert_intent", {
+				batchId: batch.id,
+				itemId: item.id,
+				type: "move",
+			});
+			try {
+				if (!pathExists(item.target)) {
+					const targetParentExists = pathExists(path.dirname(item.target));
+					markUndoFailure(
+						item,
+						targetParentExists ? "source_missing" : "destination_changed",
+					);
+				} else if (pathExists(item.source)) {
+					markUndoFailure(item, "origin_occupied");
+				} else {
+					const targetLstat = fsApi.lstatSync(item.target);
+					const targetStat = fsApi.statSync(item.target);
+					if (
+						targetLstat.isSymbolicLink() ||
+						!targetStat.isFile() ||
+						!sameIdentity(targetStat, item.postMoveFingerprint)
+					) {
+						markUndoFailure(item, "destination_replaced");
+					} else {
+						const modified = !sameContentFingerprint(
+							targetStat,
+							item.postMoveFingerprint,
+						);
+						fsApi.linkSync(item.target, item.source);
+						crashPoint("after_revert_link_before_unlink", {
+							batchId: batch.id,
+							itemId: item.id,
+							type: "move",
+						});
+						fsApi.unlinkSync(item.target);
+						item.state = "reverted";
+						item.undoOutcome = modified ? "restored_modified" : "restored";
+						if (modified) item.reason = "modified_since_move";
+					}
+				}
+			} catch (cause) {
+				if (cause instanceof InjectedApplyCrash) throw cause;
+				markUndoFailure(
+					item,
+					cause?.code === "EEXIST" ? "origin_occupied" : "filesystem_error",
+				);
+			}
+			batch.updatedAt = now();
+			journal.persist(batch);
+			moveOutcomes.push({
+				itemId: item.itemId,
+				outcome: item.undoOutcome,
+				reason: item.reason,
+			});
+			crashPoint("after_revert_result", {
+				batchId: batch.id,
+				itemId: item.id,
+				type: "move",
+			});
+		}
+
+		const folderOutcomes = [];
+		for (const item of [...batch.items].reverse()) {
+			if (item.type !== "folder" || !["created", "exists"].includes(item.state))
+				continue;
+			if (!item.createdByUs) {
+				item.state = "remove_skipped";
+				item.undoOutcome = "pre_existing";
+			} else {
+				item.state = "attempting";
+				batch.updatedAt = now();
+				journal.persist(batch);
+				crashPoint("after_folder_remove_intent", {
+					batchId: batch.id,
+					itemId: item.id,
+					type: "folder",
+				});
+				try {
+					fsApi.rmdirSync(item.path);
+					item.state = "removed";
+					item.undoOutcome = "removed";
+				} catch (cause) {
+					if (cause instanceof InjectedApplyCrash) throw cause;
+					item.state = "remove_skipped";
+					item.undoOutcome =
+						cause?.code === "ENOTEMPTY" || cause?.code === "EEXIST"
+							? "non_empty"
+							: "unavailable";
+				}
+			}
+			batch.updatedAt = now();
+			journal.persist(batch);
+			folderOutcomes.push({ folderId: item.id, outcome: item.undoOutcome });
+		}
+
+		const partial = batch.items.some(
+			(item) => item.type === "move" && item.state === "revert_conflict",
+		);
+		batch.state = partial ? "needs_attention" : "rolled_back";
+		batch.updatedAt = now();
+		journal.persist(batch);
+		crashPoint("after_undo_finished", { batchId: batch.id });
+		return {
+			batchId: batch.id,
+			state: batch.state,
+			outcome: partial ? "partial" : "complete",
+			files: moveOutcomes,
+			folders: folderOutcomes,
+		};
+	}
+
 	function apply(binding) {
 		crashPoint("before_preflight", {});
 		const { snapshot, items } = preflight(binding);
@@ -482,7 +717,7 @@ function createJournaledApplyEngine({
 		return { batchId: batch.id, state: batch.state };
 	}
 
-	return { apply, readBatch: journal.read, preflight };
+	return { apply, undo, readBatch: journal.read, preflight };
 }
 
 module.exports = {
