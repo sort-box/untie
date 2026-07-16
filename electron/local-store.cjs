@@ -8,6 +8,10 @@ const STORE_DEFINITIONS = Object.freeze({
 	journal: Object.freeze({ version: 1, entries: ["operations"] }),
 	chat: Object.freeze({ version: 2, entries: ["history", "attachments"] }),
 	grants: Object.freeze({ version: 2, entries: ["grants.json"] }),
+	preparedPlans: Object.freeze({
+		version: 1,
+		entries: ["prepared-plans.json"],
+	}),
 });
 
 const STORE_MIGRATIONS = Object.freeze({
