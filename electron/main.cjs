@@ -12,6 +12,7 @@ const {
 const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createIndexSynchronizationEngine } = require("./index-sync.cjs");
+const { createFilesystemWatcher } = require("./filesystem-watcher.cjs");
 const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
 const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
@@ -35,6 +36,7 @@ let folderGrantService;
 let folderScanner;
 let opaqueFileRegistry;
 let indexSyncEngine;
+let filesystemWatcher;
 let sortRiskService;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
@@ -219,12 +221,6 @@ app.whenReady().then(async () => {
 		const localStores = initializeLocalStores(storesDirectory);
 		fileIndex = initializeFileIndex(storesDirectory);
 		chatStore = createChatStore(path.join(storesDirectory, "chat", "history"));
-		folderGrantService = createFolderGrantService({
-			store: createGrantStore(localStores.stores.grants.directory),
-			referenceStore: capabilityReferenceStore,
-			showOpenDialog: (options) => dialog.showOpenDialog(options),
-		});
-		const restoredGrants = folderGrantService.restore();
 		folderScanner = createFolderScanner({
 			appDataDirectory: app.getPath("userData"),
 		});
@@ -240,6 +236,22 @@ app.whenReady().then(async () => {
 			scanner: folderScanner,
 			authorizer: capabilityAuthorizer,
 		});
+		filesystemWatcher = createFilesystemWatcher({
+			authorizer: capabilityAuthorizer,
+			indexSync: indexSyncEngine,
+			onCoalescedChange: ({ grantId }) => {
+				void indexSyncEngine.syncGrant(grantId).catch(() => {
+					indexSyncEngine.markStale(grantId);
+				});
+			},
+		});
+		folderGrantService = createFolderGrantService({
+			store: createGrantStore(localStores.stores.grants.directory),
+			referenceStore: capabilityReferenceStore,
+			showOpenDialog: (options) => dialog.showOpenDialog(options),
+			onGrantStateChange: (grant) => filesystemWatcher.reconcileGrant(grant),
+		});
+		const restoredGrants = folderGrantService.restore();
 		await Promise.allSettled(
 			restoredGrants
 				.filter((grant) => grant.state === "active")
@@ -268,6 +280,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
 	unregisterCapabilityHandlers?.();
+	filesystemWatcher?.close();
 	fileIndex?.database.close();
 	fileIndex = undefined;
 	chatStore = undefined;
@@ -276,6 +289,7 @@ app.on("before-quit", () => {
 	sortRiskService = undefined;
 	opaqueFileRegistry = undefined;
 	indexSyncEngine = undefined;
+	filesystemWatcher = undefined;
 	productionServer?.close();
 });
 

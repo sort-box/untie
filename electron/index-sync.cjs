@@ -30,6 +30,7 @@ function createIndexSynchronizationEngine({
 }) {
 	const statuses = new Map();
 	const running = new Set();
+	const staleRevisions = new Map();
 
 	function statusFor(grantId) {
 		return (
@@ -50,10 +51,18 @@ function createIndexSynchronizationEngine({
 		};
 	}
 
+	function markStale(grantId) {
+		const previous = statusFor(grantId);
+		staleRevisions.set(grantId, (staleRevisions.get(grantId) || 0) + 1);
+		statuses.set(grantId, { ...previous, state: "stale" });
+		return getStatus(grantId);
+	}
+
 	async function syncGrant(grantId, { signal } = {}) {
 		if (running.has(grantId)) throw new Error("This grant is already syncing.");
 		running.add(grantId);
 		const previous = statusFor(grantId);
+		const staleRevisionAtStart = staleRevisions.get(grantId) || 0;
 		statuses.set(grantId, { ...previous, state: "syncing" });
 		try {
 			throwIfCancelled(signal);
@@ -235,18 +244,29 @@ function createIndexSynchronizationEngine({
 			}
 
 			const counts = { indexed: records.length, added, updated, removed };
-			const result = { state: "idle", lastSyncedAt: now(), counts };
+			const becameStaleDuringSync =
+				(staleRevisions.get(grantId) || 0) !== staleRevisionAtStart;
+			const result = {
+				state: becameStaleDuringSync ? "stale" : "idle",
+				lastSyncedAt: now(),
+				counts,
+			};
 			statuses.set(grantId, result);
 			return getStatus(grantId);
 		} catch (error) {
-			statuses.set(grantId, { ...previous, state: "idle" });
+			const becameStaleDuringSync =
+				(staleRevisions.get(grantId) || 0) !== staleRevisionAtStart;
+			statuses.set(grantId, {
+				...previous,
+				state: becameStaleDuringSync ? "stale" : previous.state,
+			});
 			throw error;
 		} finally {
 			running.delete(grantId);
 		}
 	}
 
-	return { getStatus, syncGrant };
+	return { getStatus, markStale, syncGrant };
 }
 
 module.exports = { createIndexSynchronizationEngine, identityKey };
