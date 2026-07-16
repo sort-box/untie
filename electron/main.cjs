@@ -1,14 +1,35 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pathToFileURL } = require("node:url");
+const { registerCapabilityHandlers } = require("./capabilities/registry.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
 const PRODUCTION_PORT = 3210;
 
 let productionServer;
+let unregisterCapabilityHandlers;
+
+const capabilityImplementations = {
+	ping: async ({ message }) => ({ message }),
+	cancellableDelay: ({ milliseconds }, { signal }) =>
+		new Promise((resolve, reject) => {
+			const timeout = setTimeout(
+				() => resolve({ completed: true }),
+				milliseconds,
+			);
+			signal.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(timeout);
+					reject(new Error("cancelled"));
+				},
+				{ once: true },
+			);
+		}),
+};
 
 const contentTypes = {
 	".css": "text/css; charset=utf-8",
@@ -127,6 +148,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+	unregisterCapabilityHandlers = registerCapabilityHandlers(
+		ipcMain,
+		capabilityImplementations,
+	);
 	await createWindow();
 
 	app.on("activate", () => {
@@ -135,6 +160,7 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+	unregisterCapabilityHandlers?.();
 	productionServer?.close();
 });
 
