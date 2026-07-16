@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { FolderScanCancelledError } = require("./folder-scanner.cjs");
+const { extractFile } = require("./extraction.cjs");
 
 function throwIfCancelled(signal) {
 	if (signal?.aborted) throw new FolderScanCancelledError();
@@ -25,6 +26,7 @@ function createIndexSynchronizationEngine({
 	fsApi = fs,
 	now = Date.now,
 	onMutation,
+	extractor = extractFile,
 }) {
 	const statuses = new Map();
 	const running = new Set();
@@ -66,6 +68,8 @@ function createIndexSynchronizationEngine({
 				const stat = await fsApi.promises.lstat(currentPath);
 				throwIfCancelled(signal);
 				if (!stat.isFile() || stat.isSymbolicLink()) continue;
+				const extraction = await extractor(currentPath);
+				throwIfCancelled(signal);
 				records.push({
 					identityKey: identityKey(stat),
 					currentPath,
@@ -76,6 +80,7 @@ function createIndexSynchronizationEngine({
 						? Math.trunc(stat.birthtimeMs)
 						: null,
 					modifiedAtMs: Math.trunc(stat.mtimeMs),
+					content: extraction.status === "extracted" ? extraction.text : "",
 				});
 			}
 
@@ -174,9 +179,15 @@ function createIndexSynchronizationEngine({
 						.run(fileId);
 					database
 						.prepare(
-							"INSERT INTO file_search(file_id, filename, path, extension, content) VALUES (?, ?, ?, ?, '')",
+							"INSERT INTO file_search(file_id, filename, path, extension, content) VALUES (?, ?, ?, ?, ?)",
 						)
-						.run(fileId, record.filename, record.currentPath, record.extension);
+						.run(
+							fileId,
+							record.filename,
+							record.currentPath,
+							record.extension,
+							record.content,
+						);
 					if (!previousRecord) added += 1;
 					else if (
 						previousRecord.current_path !== record.currentPath ||
