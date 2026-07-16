@@ -7,6 +7,8 @@ const AUTHORIZATION_ERROR_CODES = Object.freeze([
 	"STALE_REFERENCE",
 	"NOT_CONTAINED",
 	"PATH_SUPPLIED",
+	"EXPIRED_ID",
+	"INVALIDATED_ID",
 ]);
 
 class CapabilityAuthorizationError extends Error {
@@ -164,6 +166,15 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 		if (!item) {
 			throw authorizationError("UNAUTHORIZED", "The opaque item is unknown");
 		}
+		if (item.status === "invalidated") {
+			throw authorizationError(
+				"INVALIDATED_ID",
+				"The opaque item was invalidated",
+			);
+		}
+		if (item.expiresAt !== undefined && item.expiresAt <= now()) {
+			throw authorizationError("EXPIRED_ID", "The opaque item expired");
+		}
 		const resolvedGrant = resolveGrant(item.grantId);
 		if (expectedGrantId !== undefined && item.grantId !== expectedGrantId) {
 			throw authorizationError(
@@ -171,24 +182,56 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 				"The item belongs to another grant",
 			);
 		}
-		if (
-			item.grantRevision !== resolvedGrant.grant.revision ||
-			(item.expiresAt !== undefined && item.expiresAt <= now())
-		) {
+		if (item.grantRevision !== resolvedGrant.grant.revision) {
 			throw authorizationError("STALE_REFERENCE", "The opaque item is stale");
 		}
-		const canonicalPath = canonicalizePath(item.path, fsApi);
+		let canonicalPath;
+		try {
+			canonicalPath = canonicalizePath(item.path, fsApi);
+		} catch (error) {
+			if (item.snapshot !== undefined) {
+				throw authorizationError(
+					"INVALIDATED_ID",
+					"The opaque item's source changed",
+				);
+			}
+			throw error;
+		}
 		if (!isContained(resolvedGrant.canonicalPath, canonicalPath)) {
 			throw authorizationError(
 				"NOT_CONTAINED",
 				"The item resolves outside its granted folder",
 			);
 		}
+		const identity = identityFor(canonicalPath, fsApi);
+		if (item.snapshot !== undefined) {
+			let stat;
+			try {
+				stat = fsApi.statSync(canonicalPath);
+			} catch {
+				throw authorizationError(
+					"INVALIDATED_ID",
+					"The opaque item's source changed",
+				);
+			}
+			if (
+				item.snapshot.canonicalPath !== canonicalPath ||
+				item.snapshot.size !== stat.size ||
+				item.snapshot.mtimeMs !== stat.mtimeMs ||
+				item.snapshot.dev !== identity.dev ||
+				item.snapshot.ino !== identity.ino
+			) {
+				throw authorizationError(
+					"INVALIDATED_ID",
+					"The opaque item's source changed",
+				);
+			}
+		}
 		return Object.freeze({
 			itemId,
 			grantId: item.grantId,
 			canonicalPath,
-			identity: identityFor(canonicalPath, fsApi),
+			identity,
 			grant: resolvedGrant,
 		});
 	}

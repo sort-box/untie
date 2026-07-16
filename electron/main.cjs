@@ -13,6 +13,7 @@ const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
+const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
 const {
 	createFolderGrantService,
 	createGrantStore,
@@ -27,6 +28,7 @@ let fileIndex;
 let chatStore;
 let folderGrantService;
 let folderScanner;
+let opaqueFileRegistry;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -65,8 +67,20 @@ const capabilityImplementations = {
 	selectFolder: async () => folderGrantService.selectFolder(),
 	listFolderGrants: async () => folderGrantService.listGrants(),
 	revokeFolderGrant: async (input) => folderGrantService.revokeGrant(input),
-	scanFolder: async (_input, { signal, authorization }) =>
-		folderScanner.scanFolder(authorization.grant.canonicalPath, { signal }),
+	scanFolder: async (_input, { signal, authorization }) => {
+		const scan = await folderScanner.scanFolder(
+			authorization.grant.canonicalPath,
+			{ signal },
+		);
+		return {
+			...scan,
+			files: opaqueFileRegistry.registerScan({
+				grant: authorization.grant.grant,
+				canonicalGrantPath: authorization.grant.canonicalPath,
+				files: scan.files,
+			}),
+		};
+	},
 };
 
 const contentTypes = {
@@ -200,6 +214,9 @@ app.whenReady().then(async () => {
 		folderScanner = createFolderScanner({
 			appDataDirectory: app.getPath("userData"),
 		});
+		opaqueFileRegistry = createOpaqueFileRegistry({
+			referenceStore: capabilityReferenceStore,
+		});
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -228,6 +245,7 @@ app.on("before-quit", () => {
 	chatStore = undefined;
 	folderGrantService = undefined;
 	folderScanner = undefined;
+	opaqueFileRegistry = undefined;
 	productionServer?.close();
 });
 
