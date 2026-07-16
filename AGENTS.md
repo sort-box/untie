@@ -1,3 +1,19 @@
+# Untie
+
+Untie is a macOS desktop app (Electron + TanStack Start + Convex + Clerk +
+usage-limited OpenRouter LLM service) whose mission is: **sort your files**.
+
+**Read `docs/PRD.md` before doing any product or feature work.** It is the
+agreed v1 product requirements document (chat shell with structured plan
+cards, semantic find over a local index, safety-first sort pipeline with
+opaque file IDs, deterministic validation, write-ahead journal, and undo).
+Scope decisions there are settled — do not re-litigate them in code; flag
+conflicts instead.
+
+The v1 build plan lives in `docs/github-issues.md` (65 issues across 6
+milestones with dependencies and definitions of done). When implementing,
+respect the dependency order and each issue's definition of done.
+
 <!-- intent-skills:start -->
 # TanStack Intent - before editing files, run the matching guidance command.
 tanstackIntent:
