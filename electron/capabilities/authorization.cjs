@@ -91,6 +91,8 @@ function identityFor(canonicalPath, fsApi = fs) {
 class CapabilityReferenceStore {
 	#grants = new Map();
 	#items = new Map();
+	#plans = new Map();
+	#operations = new Map();
 
 	setGrant(grant) {
 		let boundary = {};
@@ -111,6 +113,40 @@ class CapabilityReferenceStore {
 
 	getItem(itemId) {
 		return this.#items.get(itemId);
+	}
+
+	setPlan(plan) {
+		this.#plans.set(plan.id, Object.freeze({ ...plan }));
+	}
+
+	getPlan(planId) {
+		return this.#plans.get(planId);
+	}
+
+	setOperation(operation) {
+		this.#operations.set(operation.id, Object.freeze({ ...operation }));
+	}
+
+	getOperation(operationId) {
+		return this.#operations.get(operationId);
+	}
+
+	invalidateGrant(grantId) {
+		for (const [id, item] of this.#items) {
+			if (item.grantId === grantId)
+				this.#items.set(id, Object.freeze({ ...item, status: "invalidated" }));
+		}
+		for (const [id, plan] of this.#plans) {
+			if (plan.grantId === grantId)
+				this.#plans.set(id, Object.freeze({ ...plan, status: "invalidated" }));
+		}
+		for (const [id, operation] of this.#operations) {
+			if (operation.grantId === grantId)
+				this.#operations.set(
+					id,
+					Object.freeze({ ...operation, status: "invalidated" }),
+				);
+		}
 	}
 }
 
@@ -166,6 +202,9 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 		if (!item) {
 			throw authorizationError("UNAUTHORIZED", "The opaque item is unknown");
 		}
+		// Grant revocation is the primary boundary and must remain the typed result
+		// even after lifecycle cleanup invalidates the derived item.
+		const resolvedGrant = resolveGrant(item.grantId);
 		if (item.status === "invalidated") {
 			throw authorizationError(
 				"INVALIDATED_ID",
@@ -175,7 +214,6 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 		if (item.expiresAt !== undefined && item.expiresAt <= now()) {
 			throw authorizationError("EXPIRED_ID", "The opaque item expired");
 		}
-		const resolvedGrant = resolveGrant(item.grantId);
 		if (expectedGrantId !== undefined && item.grantId !== expectedGrantId) {
 			throw authorizationError(
 				"UNAUTHORIZED",
@@ -236,6 +274,47 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 		});
 	}
 
+	function resolveGrantReference(reference, kind) {
+		if (!reference) {
+			throw authorizationError("UNAUTHORIZED", `The opaque ${kind} is unknown`);
+		}
+		// Resolve the grant first so revocation always wins over the derived
+		// reference's invalidation state and callers receive the typed hard-boundary
+		// error required by the grant lifecycle contract.
+		const resolvedGrant = resolveGrant(reference.grantId);
+		if (reference.status === "invalidated") {
+			throw authorizationError(
+				"INVALIDATED_ID",
+				`The opaque ${kind} was invalidated`,
+			);
+		}
+		if (reference.grantRevision !== resolvedGrant.grant.revision) {
+			throw authorizationError(
+				"STALE_REFERENCE",
+				`The opaque ${kind} is stale`,
+			);
+		}
+		return Object.freeze({ reference, grant: resolvedGrant });
+	}
+
+	function resolvePlan(planId) {
+		if (looksLikePath(planId))
+			throw authorizationError(
+				"PATH_SUPPLIED",
+				"Filesystem paths are not capabilities",
+			);
+		return resolveGrantReference(store.getPlan(planId), "plan");
+	}
+
+	function resolveOperation(operationId) {
+		if (looksLikePath(operationId))
+			throw authorizationError(
+				"PATH_SUPPLIED",
+				"Filesystem paths are not capabilities",
+			);
+		return resolveGrantReference(store.getOperation(operationId), "operation");
+	}
+
 	function authorize(capability, input) {
 		if (containsRendererPath(input)) {
 			throw authorizationError(
@@ -263,12 +342,24 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 			case "openItem":
 			case "revealItem":
 				return Object.freeze({ item: resolveItem(input.itemId) });
+			case "applyPlan":
+				return Object.freeze({ plan: resolvePlan(input.planId) });
+			case "undo":
+				return Object.freeze({
+					operation: resolveOperation(input.operationId),
+				});
 			default:
 				return Object.freeze({});
 		}
 	}
 
-	return { authorize, resolveGrant, resolveItem };
+	return {
+		authorize,
+		resolveGrant,
+		resolveItem,
+		resolveOperation,
+		resolvePlan,
+	};
 }
 
 module.exports = {

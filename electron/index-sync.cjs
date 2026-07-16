@@ -58,6 +58,49 @@ function createIndexSynchronizationEngine({
 		return getStatus(grantId);
 	}
 
+	function removeGrant(grantId) {
+		// Policy: remove this grant's membership immediately. Orphaned derived rows
+		// are deleted; rows shared with another grant remain available to that grant.
+		const database = index.database;
+		database.exec("BEGIN IMMEDIATE");
+		try {
+			const rows = database
+				.prepare("SELECT file_id FROM indexed_grants WHERE grant_id = ?")
+				.all(grantId);
+			database
+				.prepare("DELETE FROM indexed_grants WHERE grant_id = ?")
+				.run(grantId);
+			for (const { file_id: fileId } of rows) {
+				const memberships = database
+					.prepare(
+						"SELECT count(*) AS count FROM indexed_grants WHERE file_id = ?",
+					)
+					.get(fileId).count;
+				if (memberships === 0)
+					database
+						.prepare("DELETE FROM file_search WHERE file_id = ?")
+						.run(fileId);
+				if (memberships === 0)
+					database
+						.prepare("DELETE FROM file_identities WHERE id = ?")
+						.run(fileId);
+			}
+			database.exec("COMMIT");
+			const previous = statusFor(grantId);
+			statuses.set(grantId, {
+				state: "unavailable",
+				lastSyncedAt: previous.lastSyncedAt,
+				counts: { indexed: 0, added: 0, updated: 0, removed: rows.length },
+			});
+			return getStatus(grantId);
+		} catch (error) {
+			try {
+				database.exec("ROLLBACK");
+			} catch {}
+			throw error;
+		}
+	}
+
 	async function syncGrant(grantId, { signal } = {}) {
 		if (running.has(grantId)) throw new Error("This grant is already syncing.");
 		running.add(grantId);
@@ -94,6 +137,9 @@ function createIndexSynchronizationEngine({
 			}
 
 			throwIfCancelled(signal);
+			// A scan can outlive its grant. Reauthorize immediately before the
+			// synchronous transaction so revocation cannot repopulate cleared rows.
+			authorizer.resolveGrant(grantId);
 			const database = index.database;
 			const existingRows = database
 				.prepare(`
@@ -266,7 +312,7 @@ function createIndexSynchronizationEngine({
 		}
 	}
 
-	return { getStatus, markStale, syncGrant };
+	return { getStatus, markStale, removeGrant, syncGrant };
 }
 
 module.exports = { createIndexSynchronizationEngine, identityKey };
