@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { ChatPane } from "../components/chat/chat-pane";
+import { ChatWorkspace } from "../components/chat/chat-workspace";
 import {
 	type CurrentIdentityResult,
 	getCurrentIdentity,
@@ -29,8 +29,8 @@ function Home() {
 				</p>
 			</header>
 			<main className="flex min-h-0 w-full flex-1 justify-center px-6 pb-6">
-				<div className="flex min-h-0 w-full max-w-3xl flex-col">
-					<ChatPane />
+				<div className="flex min-h-0 w-full max-w-5xl">
+					<ChatWorkspace />
 				</div>
 			</main>
 		</div>

@@ -1,12 +1,9 @@
-import { PlusIcon, SendIcon } from "lucide-react";
+import { SendIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "#/components/ui/button";
-import {
-	listChatSessions,
-	loadChatSession,
-	saveChatSession,
-} from "./chat-persistence";
+import { saveChatSession } from "./chat-persistence";
+import { deriveChatTitle } from "./chat-title";
 import { MessageCard } from "./message-card";
 import {
 	type ChatMessage,
@@ -23,64 +20,71 @@ import {
 
 const DEFAULT_REQUEST = "Sort my Downloads";
 
-function newSession() {
-	return { id: createMessageId(), createdAt: Date.now() };
+/** The chat currently shown: identity plus its persisted transcript to seed. */
+export interface ChatPaneProps {
+	/** Identity of the active chat; persisted writes key off this. */
+	readonly session: { readonly id: string; readonly createdAt: number };
+	/** Transcript to seed the pane with (a resumed chat, or empty for a new one). */
+	readonly initialMessages: readonly ChatMessage[];
+	/** Called after the transcript is persisted, so the recent-chats list refreshes. */
+	readonly onPersisted?: () => void;
 }
 
 /**
  * The main chat pane for the Untie shell. Holds the transcript in memory and
  * mirrors it to local, versioned storage through the capability IPC surface
- * (P2): on start it resumes the most recent persisted chat, and it re-saves the
- * session whenever the transcript changes so chats survive relaunch. Outside
- * Electron (dev:web, tests) persistence degrades to an in-memory no-op. A
- * clearly-labelled dev toolbar drives the mock sort simulation so the message
- * states can be round-tripped without a backend.
+ * (P2): it is seeded with the active chat's transcript and re-saves the session
+ * whenever the transcript changes so chats survive relaunch. The recent-chats
+ * sidebar (P5) owns which chat is active and remounts this pane on switch, so
+ * each mount starts from a single, clean transcript. Outside Electron (dev:web,
+ * tests) persistence degrades to an in-memory no-op. A clearly-labelled dev
+ * toolbar drives the mock sort simulation so the message states can be
+ * round-tripped without a backend.
  */
-export function ChatPane() {
-	const [messages, setMessages] = useState<ChatMessage[]>([]);
+export function ChatPane({
+	session,
+	initialMessages,
+	onPersisted,
+}: ChatPaneProps) {
+	const [messages, setMessages] = useState<ChatMessage[]>(() => [
+		...initialMessages,
+	]);
 	const [input, setInput] = useState("");
 	const [isRunning, setIsRunning] = useState(false);
-	// Identity of the chat currently shown; persisted writes key off this.
-	const sessionRef = useRef(newSession());
-	// Gate persistence until the initial resume has run, so hydration never
-	// overwrites a stored chat with the empty starting transcript.
-	const [isHydrated, setIsHydrated] = useState(false);
 	const driverRef = useRef<DriverHandle | null>(null);
 	const listEndRef = useRef<HTMLDivElement | null>(null);
+	// Keep the latest callback without making it a persist-effect dependency.
+	const onPersistedRef = useRef(onPersisted);
+	onPersistedRef.current = onPersisted;
+	// Don't re-persist the transcript we were seeded with (a resumed chat); only
+	// genuine edits made after mount should hit the store.
+	const skipInitialPersistRef = useRef(initialMessages.length > 0);
 
 	// Cancel any in-flight mock driver when the pane unmounts.
 	useEffect(() => () => driverRef.current?.cancel(), []);
 
-	// Resume the most recent persisted chat on start.
+	// Mirror the transcript to local storage as it evolves. Empty transcripts are
+	// never persisted, so a brand-new chat leaves no session behind until it has
+	// content. `session` is stable for the pane's lifetime (it is remounted on
+	// switch), so this effect only re-runs as the transcript changes.
 	useEffect(() => {
+		if (messages.length === 0) return;
+		if (skipInitialPersistRef.current) {
+			skipInitialPersistRef.current = false;
+			return;
+		}
 		let cancelled = false;
-		void (async () => {
-			const sessions = await listChatSessions();
-			const latest = sessions[0];
-			if (latest) {
-				const resumed = await loadChatSession(latest.id);
-				if (!cancelled && resumed) {
-					sessionRef.current = {
-						id: resumed.id,
-						createdAt: resumed.createdAt,
-					};
-					setMessages([...resumed.messages]);
-				}
-			}
-			if (!cancelled) setIsHydrated(true);
-		})();
+		void saveChatSession({
+			id: session.id,
+			createdAt: session.createdAt,
+			messages,
+		}).then((saved) => {
+			if (!cancelled && saved) onPersistedRef.current?.();
+		});
 		return () => {
 			cancelled = true;
 		};
-	}, []);
-
-	// Mirror the transcript to local storage as it evolves. Empty transcripts are
-	// never persisted, so "New chat" leaves no empty session behind.
-	useEffect(() => {
-		if (!isHydrated || messages.length === 0) return;
-		const { id, createdAt } = sessionRef.current;
-		void saveChatSession({ id, createdAt, messages });
-	}, [messages, isHydrated]);
+	}, [messages, session.id, session.createdAt]);
 
 	// Keep the newest message in view as the transcript grows.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript change.
@@ -146,37 +150,24 @@ export function ChatPane() {
 		);
 	};
 
-	const newChat = () => {
-		driverRef.current?.cancel();
-		setIsRunning(false);
-		setMessages([]);
-		setInput("");
-		// Start a fresh session; the prior chat stays persisted and resumable.
-		sessionRef.current = newSession();
-	};
-
 	const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		startSort(input || DEFAULT_REQUEST);
 	};
 
 	const isEmpty = messages.length === 0;
+	const title = deriveChatTitle(messages);
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col">
-			<div className="flex items-center justify-between gap-3 pb-3">
-				<h2 className="font-semibold text-foreground text-sm">Chat</h2>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					onClick={newChat}
-					disabled={isEmpty && !isRunning}
+			<header className="flex items-center gap-3 pb-3">
+				<h2
+					className="min-w-0 truncate font-semibold text-foreground text-sm"
+					title={title}
 				>
-					<PlusIcon />
-					New chat
-				</Button>
-			</div>
+					{title}
+				</h2>
+			</header>
 
 			<div className="island-shell flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-border">
 				<div className="min-h-0 flex-1 overflow-y-auto p-4">
