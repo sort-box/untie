@@ -147,6 +147,8 @@ function createPreparedPlanStore({
 				"SUPERSEDED",
 				"Prepared plan was replaced by an edited snapshot",
 			);
+		if (record.status === "invalidated")
+			throw fail("INVALIDATED", "Prepared plan is no longer usable");
 		if (snapshot.expiresAt <= now())
 			throw fail("EXPIRED", "Prepared plan snapshot expired");
 		try {
@@ -267,13 +269,34 @@ function createPreparedPlanStore({
 
 	function getApproved(binding) {
 		const record = find(binding.snapshotId);
+		if (record.status === "invalidated")
+			throw fail("INVALIDATED", "Prepared plan is no longer usable");
 		if (record.status !== "approved")
 			throw fail("NOT_APPROVED", "Prepared plan is not approved");
 		return assertUsable(record, binding.fingerprint);
 	}
 
+	function invalidate(snapshotId, reason) {
+		const record = find(snapshotId);
+		if (record.status === "superseded" || record.status === "invalidated")
+			return;
+		persist({
+			...document,
+			snapshots: document.snapshots.map((entry) =>
+				entry === record
+					? {
+							...entry,
+							status: "invalidated",
+							invalidatedReason: reason,
+							invalidatedAt: now(),
+						}
+					: entry,
+			),
+		});
+	}
+
 	load();
-	return { prepare, replace, approve, getApproved };
+	return { prepare, replace, approve, getApproved, invalidate };
 }
 
 module.exports = {
