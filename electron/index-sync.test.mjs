@@ -91,8 +91,8 @@ describe("grant-scoped index synchronization", () => {
 			expect.objectContaining({ filename: "report.txt", size_bytes: 5 }),
 		]);
 		expect(
-			index.database.prepare("SELECT filename FROM file_search").all(),
-		).toEqual([{ filename: "report.txt" }]);
+			index.database.prepare("SELECT filename, content FROM file_search").all(),
+		).toEqual([{ filename: "report.txt", content: "hello" }]);
 		index.database.close();
 	});
 
