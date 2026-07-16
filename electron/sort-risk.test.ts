@@ -11,6 +11,7 @@ const {
 	TOOL_MANAGED_SUFFIXES,
 	classifySortRisk,
 	createRiskAcknowledgmentStore,
+	createSortRiskService,
 } = require("./sort-risk.cjs");
 
 const temporaryDirectories: string[] = [];
@@ -143,5 +144,36 @@ describe("one-use risk acknowledgments", () => {
 			expect.objectContaining({ code: "ACKNOWLEDGMENT_TOKEN_MISMATCH" }),
 		);
 		expect(store.consume(token, binding)).toEqual(binding);
+	});
+});
+
+describe("grant-bound risk capabilities", () => {
+	it("rejects acknowledgment when its classified grant was revoked", async () => {
+		const service = createSortRiskService({
+			scanner: {
+				scanFolder: async () => ({
+					files: [],
+					candidateDestinations: [],
+					skipped: [],
+				}),
+			},
+			acknowledgmentStore: createRiskAcknowledgmentStore(),
+			authorizer: {
+				resolveGrant: () => {
+					throw Object.assign(new Error("revoked"), {
+						code: "REVOKED_GRANT",
+					});
+				},
+			},
+			randomUUID: () => "00000000-0000-0000-0000-000000000001",
+		});
+		const { classificationId } = await service.classify({
+			grantId: "grant-one",
+			canonicalPath: "/unused",
+		});
+
+		expect(() => service.acknowledge({ classificationId })).toThrowError(
+			expect.objectContaining({ code: "REVOKED_GRANT" }),
+		);
 	});
 });

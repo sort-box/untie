@@ -157,6 +157,7 @@ function createRiskAcknowledgmentStore({
 function createSortRiskService({
 	scanner,
 	acknowledgmentStore,
+	authorizer,
 	randomUUID: random = randomUUID,
 }) {
 	const classifications = new Map();
@@ -182,6 +183,9 @@ function createSortRiskService({
 				"The risk classification is unknown or no longer current.",
 			);
 		}
+		// A classification is a derived grant capability. Reauthorize it at use
+		// time so it cannot mint a token after revocation or unavailability.
+		authorizer?.resolveGrant(binding.grantId);
 		return { acknowledgmentToken: acknowledgmentStore.issue(binding) };
 	}
 

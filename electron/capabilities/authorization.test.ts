@@ -190,4 +190,43 @@ describe("capability authorization", () => {
 			expect.objectContaining({ code: "STALE_REFERENCE" }),
 		);
 	});
+
+	it.each([
+		["scanFolder", { grantId: "grant-1" }],
+		["classifyFolderRisk", { grantId: "grant-1" }],
+		[
+			"preparePlan",
+			{
+				grantId: "grant-1",
+				operations: [
+					{ itemId: "item-1", destination: { newFolderName: "Docs" } },
+				],
+			},
+		],
+		["applyPlan", { planId: "plan-1" }],
+		["undo", { operationId: "operation-1" }],
+		["revealItem", { itemId: "item-1" }],
+		["openItem", { itemId: "item-1" }],
+	])("rejects revoked grants before the %s capability runs", (capability, input) => {
+		const file = path.join(granted, "notes.txt");
+		fs.writeFileSync(file, "notes");
+		addGrant({ status: "revoked", revision: 4 });
+		addItem("item-1", file, { status: "invalidated" });
+		store.setPlan({
+			id: "plan-1",
+			grantId: "grant-1",
+			grantRevision: 3,
+			status: "invalidated",
+		});
+		store.setOperation({
+			id: "operation-1",
+			grantId: "grant-1",
+			grantRevision: 3,
+			status: "invalidated",
+		});
+
+		expect(() =>
+			createCapabilityAuthorizer({ store }).authorize(capability, input),
+		).toThrowError(expect.objectContaining({ code: "REVOKED_GRANT" }));
+	});
 });

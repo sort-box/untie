@@ -321,4 +321,23 @@ describe("grant-scoped index synchronization", () => {
 		expect(engine.getStatus("grant_test").state).toBe("idle");
 		index.database.close();
 	});
+
+	test("removes a revoked grant's membership and all orphaned searchable data", async () => {
+		const { granted, index, engine } = setup();
+		fs.writeFileSync(path.join(granted, "private.txt"), "private words");
+		await engine.syncGrant("grant_test");
+
+		expect(engine.removeGrant("grant_test")).toMatchObject({
+			state: "unavailable",
+			counts: { indexed: 0, removed: 1 },
+		});
+		expect(
+			index.database.prepare("SELECT * FROM indexed_grants").all(),
+		).toEqual([]);
+		expect(index.database.prepare("SELECT * FROM file_search").all()).toEqual(
+			[],
+		);
+		expect(identityRows(index.database)).toEqual([]);
+		index.database.close();
+	});
 });

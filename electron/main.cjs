@@ -14,6 +14,7 @@ const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createIndexSynchronizationEngine } = require("./index-sync.cjs");
 const { createFilesystemWatcher } = require("./filesystem-watcher.cjs");
+const { createGrantLifecycle } = require("./grant-lifecycle.cjs");
 const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
 const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
@@ -228,6 +229,7 @@ app.whenReady().then(async () => {
 		sortRiskService = createSortRiskService({
 			scanner: folderScanner,
 			acknowledgmentStore: createRiskAcknowledgmentStore(),
+			authorizer: capabilityAuthorizer,
 		});
 		opaqueFileRegistry = createOpaqueFileRegistry({
 			referenceStore: capabilityReferenceStore,
@@ -246,11 +248,16 @@ app.whenReady().then(async () => {
 				});
 			},
 		});
+		const grantLifecycle = createGrantLifecycle({
+			watcher: filesystemWatcher,
+			referenceStore: capabilityReferenceStore,
+			indexSync: indexSyncEngine,
+		});
 		folderGrantService = createFolderGrantService({
 			store: createGrantStore(localStores.stores.grants.directory),
 			referenceStore: capabilityReferenceStore,
 			showOpenDialog: (options) => dialog.showOpenDialog(options),
-			onGrantStateChange: (grant) => filesystemWatcher.reconcileGrant(grant),
+			onGrantStateChange: grantLifecycle.handleStateChange,
 		});
 		const restoredGrants = folderGrantService.restore();
 		await Promise.allSettled(
