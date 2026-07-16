@@ -3,7 +3,7 @@ const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { createNodeSqliteIndexAdapter } = require("./index-adapter.cjs");
 
-const INDEX_SCHEMA_VERSION = 2;
+const INDEX_SCHEMA_VERSION = 3;
 const FTS5_TOKENIZER = "porter unicode61 remove_diacritics 2";
 
 const INDEX_MIGRATIONS = Object.freeze({
@@ -39,6 +39,16 @@ const INDEX_MIGRATIONS = Object.freeze({
 				content,
 				tokenize='${FTS5_TOKENIZER}'
 			);
+		`);
+	},
+	3: (database) => {
+		database.exec(`
+			CREATE TABLE indexed_grants (
+				grant_id TEXT NOT NULL,
+				file_id INTEGER NOT NULL REFERENCES file_identities(id) ON DELETE CASCADE,
+				PRIMARY KEY (grant_id, file_id)
+			) STRICT;
+			CREATE INDEX indexed_grants_file_id ON indexed_grants(file_id);
 		`);
 	},
 });
