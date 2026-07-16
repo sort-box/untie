@@ -35,6 +35,22 @@ export type FolderGrant = {
 	readonly state: FolderGrantState;
 	readonly createdAt: number;
 };
+export type ScanSkipReason =
+	| "HIDDEN"
+	| "SYMLINK_OR_ALIAS"
+	| "PACKAGE_BUNDLE"
+	| "TEMPORARY_DOWNLOAD"
+	| "APP_DATA"
+	| "UNSUPPORTED_TYPE";
+export type ScanNamedEntry = { readonly name: string };
+export type ScanSkippedEntry = ScanNamedEntry & {
+	readonly reason: ScanSkipReason;
+};
+export type ScanFolderResult = {
+	readonly files: ScanNamedEntry[];
+	readonly candidateDestinations: ScanNamedEntry[];
+	readonly skipped: ScanSkippedEntry[];
+};
 
 // Chat persistence (P2). Messages are typed loosely at the capability boundary
 // by their shared base fields only: the concrete `ChatMessage` union lives in
@@ -93,7 +109,7 @@ export interface CapabilityMap {
 	};
 	scanFolder: {
 		request: OpaqueIdRequest<"grantId">;
-		response: { scanId: string; itemIds: string[] };
+		response: ScanFolderResult;
 	};
 	queryIndex: {
 		request: { query: string; limit?: number };

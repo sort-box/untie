@@ -92,6 +92,26 @@ const boolean = (value) => typeof value === "boolean";
 const nullableString = (value) => value === null || nonEmptyString(value);
 const stringArray = (value) =>
 	Array.isArray(value) && value.every((item) => nonEmptyString(item));
+const scanNamedEntries = (value) =>
+	Array.isArray(value) &&
+	value.every((entry) => exactResponse({ name: nonEmptyString })(entry).ok);
+const scanSkipReasons = Object.freeze([
+	"HIDDEN",
+	"SYMLINK_OR_ALIAS",
+	"PACKAGE_BUNDLE",
+	"TEMPORARY_DOWNLOAD",
+	"APP_DATA",
+	"UNSUPPORTED_TYPE",
+]);
+const scanSkippedEntries = (value) =>
+	Array.isArray(value) &&
+	value.every(
+		(entry) =>
+			exactResponse({
+				name: nonEmptyString,
+				reason: (reason) => scanSkipReasons.includes(reason),
+			})(entry).ok,
+	);
 
 // Chat persistence (P2). A session id is a path-free opaque token; the pattern
 // mirrors CHAT_SESSION_ID_PATTERN in chat-store.cjs (kept independent so this
@@ -212,7 +232,11 @@ const contracts = Object.freeze({
 	},
 	scanFolder: {
 		request: opaqueIdRequest("grantId"),
-		response: exactResponse({ scanId: nonEmptyString, itemIds: stringArray }),
+		response: exactResponse({
+			files: scanNamedEntries,
+			candidateDestinations: scanNamedEntries,
+			skipped: scanSkippedEntries,
+		}),
 	},
 	queryIndex: {
 		request(value) {

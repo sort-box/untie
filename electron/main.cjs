@@ -12,6 +12,7 @@ const {
 const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createChatStore } = require("./chat-store.cjs");
+const { createFolderScanner } = require("./folder-scanner.cjs");
 const {
 	createFolderGrantService,
 	createGrantStore,
@@ -25,6 +26,7 @@ let unregisterCapabilityHandlers;
 let fileIndex;
 let chatStore;
 let folderGrantService;
+let folderScanner;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -63,6 +65,8 @@ const capabilityImplementations = {
 	selectFolder: async () => folderGrantService.selectFolder(),
 	listFolderGrants: async () => folderGrantService.listGrants(),
 	revokeFolderGrant: async (input) => folderGrantService.revokeGrant(input),
+	scanFolder: async (_input, { signal, authorization }) =>
+		folderScanner.scanFolder(authorization.grant.canonicalPath, { signal }),
 };
 
 const contentTypes = {
@@ -193,6 +197,9 @@ app.whenReady().then(async () => {
 			showOpenDialog: (options) => dialog.showOpenDialog(options),
 		});
 		folderGrantService.restore();
+		folderScanner = createFolderScanner({
+			appDataDirectory: app.getPath("userData"),
+		});
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -220,6 +227,7 @@ app.on("before-quit", () => {
 	fileIndex = undefined;
 	chatStore = undefined;
 	folderGrantService = undefined;
+	folderScanner = undefined;
 	productionServer?.close();
 });
 
