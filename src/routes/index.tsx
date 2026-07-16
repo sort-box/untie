@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { ChatPane } from "../components/chat/chat-pane";
 import {
 	type CurrentIdentityResult,
 	getCurrentIdentity,
@@ -15,11 +16,23 @@ function Home() {
 	}, []);
 
 	return (
-		<div className="p-8">
-			<h1 className="text-4xl font-bold">Untie</h1>
-			<p className="mt-4 text-sm text-muted-foreground" aria-live="polite">
-				{identityStatus(identity)}
-			</p>
+		<div className="flex h-dvh flex-col">
+			<header className="flex items-center justify-between gap-4 px-6 py-4">
+				<h1 className="display-title font-semibold text-2xl text-foreground">
+					Untie
+				</h1>
+				<p
+					className="rounded-full border border-border bg-[color:var(--chip-bg)] px-3 py-1 text-muted-foreground text-xs"
+					aria-live="polite"
+				>
+					{identityStatus(identity)}
+				</p>
+			</header>
+			<main className="flex min-h-0 w-full flex-1 justify-center px-6 pb-6">
+				<div className="flex min-h-0 w-full max-w-3xl flex-col">
+					<ChatPane />
+				</div>
+			</main>
 		</div>
 	);
 }
