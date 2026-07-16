@@ -187,4 +187,29 @@ describe("capability registry", () => {
 			},
 		});
 	});
+
+	it("rejects a grant-list response that leaks a filesystem path", async () => {
+		const registry = createCapabilityRegistry({
+			listFolderGrants: async () => ({
+				grants: [
+					{
+						grantId: "grant-safe",
+						state: "active",
+						createdAt: 1,
+						path: "/Users/alice",
+					},
+				],
+			}),
+		});
+		const result = await registry.invoke(undefined, {
+			requestId: "grant-path-leak",
+			capability: "listFolderGrants",
+			input: {},
+		});
+
+		expect(result).toMatchObject({
+			ok: false,
+			error: { code: "INVALID_RESPONSE" },
+		});
+	});
 });

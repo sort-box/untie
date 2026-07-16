@@ -2,6 +2,8 @@ const capabilityNames = Object.freeze([
 	"ping",
 	"cancellableDelay",
 	"selectFolder",
+	"listFolderGrants",
+	"revokeFolderGrant",
 	"scanFolder",
 	"queryIndex",
 	"preparePlan",
@@ -87,6 +89,7 @@ const exactResponse = (fields) => exactFields(fields, "response");
 
 const nonEmptyString = (value) => typeof value === "string" && value.length > 0;
 const boolean = (value) => typeof value === "boolean";
+const nullableString = (value) => value === null || nonEmptyString(value);
 const stringArray = (value) =>
 	Array.isArray(value) && value.every((item) => nonEmptyString(item));
 
@@ -185,7 +188,27 @@ const contracts = Object.freeze({
 	},
 	selectFolder: {
 		request: emptyObject,
-		response: exactResponse({ grantId: nonEmptyString }),
+		response: exactResponse({ grantId: nullableString }),
+	},
+	listFolderGrants: {
+		request: emptyObject,
+		response: exactResponse({
+			grants: (value) =>
+				Array.isArray(value) &&
+				value.every(
+					(grant) =>
+						exactResponse({
+							grantId: nonEmptyString,
+							state: (state) =>
+								["active", "missing", "moved", "revoked"].includes(state),
+							createdAt: timestamp,
+						})(grant).ok,
+				),
+		}),
+	},
+	revokeFolderGrant: {
+		request: opaqueIdRequest("grantId"),
+		response: exactResponse({ revoked: boolean }),
 	},
 	scanFolder: {
 		request: opaqueIdRequest("grantId"),

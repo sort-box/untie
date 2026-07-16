@@ -31,11 +31,16 @@ describe("local stores", () => {
 		const root = temporaryDirectory();
 		const result = initializeLocalStores(root);
 
-		expect(Object.keys(result.stores)).toEqual(["db", "journal", "chat"]);
-		for (const store of ["db", "journal", "chat"]) {
+		expect(Object.keys(result.stores)).toEqual([
+			"db",
+			"journal",
+			"chat",
+			"grants",
+		]);
+		for (const store of ["db", "journal", "chat", "grants"]) {
 			expect(manifest(root, store)).toEqual({
 				store,
-				version: store === "chat" ? 2 : 1,
+				version: store === "chat" || store === "grants" ? 2 : 1,
 			});
 			expect(result.stores[store].directory).toBe(path.join(root, store));
 		}
@@ -51,6 +56,24 @@ describe("local stores", () => {
 		expect(
 			fs.statSync(path.join(root, "chat", "attachments")).isDirectory(),
 		).toBe(true);
+	});
+
+	test("migrates the v1 grants array container to v2", () => {
+		const root = temporaryDirectory();
+		const grants = path.join(root, "grants");
+		fs.mkdirSync(grants, { recursive: true });
+		fs.writeFileSync(
+			path.join(grants, "store.json"),
+			JSON.stringify({ store: "grants", version: 1 }),
+		);
+		fs.writeFileSync(path.join(grants, "grants.json"), "[]");
+
+		initializeLocalStores(root);
+
+		expect(manifest(root, "grants")).toEqual({ store: "grants", version: 2 });
+		expect(
+			JSON.parse(fs.readFileSync(path.join(grants, "grants.json"), "utf8")),
+		).toEqual({ grants: [] });
 	});
 
 	test("migrates a v1 chat store to v2 once while preserving existing data", () => {
