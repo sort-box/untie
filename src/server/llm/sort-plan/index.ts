@@ -1,5 +1,9 @@
 export { generateSortPlanEndpoint } from "./endpoint";
 export {
+	buildSortPlanRequest,
+	buildSortPlanRequestDataManifest,
+} from "./prompt";
+export {
 	SORT_PLAN_MAX_DESTINATIONS,
 	SORT_PLAN_MAX_FILES,
 	SORT_PLAN_MAX_PROMPT_BYTES,

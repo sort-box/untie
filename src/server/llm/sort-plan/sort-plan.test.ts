@@ -9,7 +9,11 @@ import {
 	SORT_PLAN_MODEL,
 	SORT_PLAN_TIMEOUT_MS,
 } from "./generate.server";
-import { buildSortPlanMessages } from "./prompt";
+import {
+	buildSortPlanMessages,
+	buildSortPlanRequest,
+	buildSortPlanRequestDataManifest,
+} from "./prompt";
 import { SORT_PLAN_MAX_FILES, SORT_PLAN_MAX_PROMPT_BYTES } from "./schema";
 import type { GenerateSortPlanInput, SortPlan } from "./types";
 
@@ -56,6 +60,78 @@ function fakeService(
 }
 
 describe("production sort-plan generation", () => {
+	it("accounts exactly for every category in the transmitted payload", () => {
+		const input: GenerateSortPlanInput = {
+			files: [
+				{
+					id: "opaque-1",
+					displayName: "notes.txt",
+					extension: "txt",
+					sizeBytes: 42,
+					modifiedAt: "2026-07-16T12:00:00Z",
+					excerpt: "Meeting notes",
+				},
+				{
+					id: "opaque-2",
+					displayName: "photo.jpg",
+					extension: "jpg",
+					sizeBytes: 1_024,
+				},
+				{
+					id: "opaque-3",
+					displayName: "lease.pdf",
+					modifiedAt: "2026-07-15T12:00:00Z",
+					excerpt: "Lease terms",
+				},
+			],
+			candidateDestinationNames: ["Documents", "Photos"],
+			regenerationInstruction: "Keep leases separate",
+		};
+		const { messages, manifest } = buildSortPlanRequest(input);
+		const transmitted = messages[1]?.content ?? "";
+
+		expect(manifest).toEqual({
+			filenameCount: 3,
+			metadata: {
+				fields: ["extension", "sizeBytes", "modifiedAt"],
+				valueCount: 6,
+			},
+			contentSnippetCount: 2,
+			documentCount: 2,
+			opaqueIdCount: 3,
+			candidateDestinationNameCount: 2,
+			regenerationInstructionCount: 1,
+			messageCount: 2,
+			totalPayloadBytes: messages.reduce(
+				(total, message) =>
+					total + new TextEncoder().encode(message.content).byteLength,
+				0,
+			),
+		});
+		expect(transmitted.match(/"displayName":/gu)).toHaveLength(
+			manifest.filenameCount,
+		);
+		expect(transmitted.match(/"excerpt":/gu)).toHaveLength(
+			manifest.contentSnippetCount,
+		);
+		expect(transmitted.match(/"id":/gu)).toHaveLength(manifest.opaqueIdCount);
+	});
+
+	it("fails closed when transmitted data gains an unaccounted category", () => {
+		const messages = buildSortPlanMessages(validInput);
+		const changed = messages.map((message) => ({ ...message }));
+		const userMessage = changed[1];
+		if (!userMessage) throw new Error("Expected sort-plan user message");
+		userMessage.content = userMessage.content.replace(
+			'"displayName":"notes.txt"',
+			'"displayName":"notes.txt","absolutePath":"/private/secret"',
+		);
+
+		expect(() => buildSortPlanRequestDataManifest(changed)).toThrow(
+			"Unaccounted field",
+		);
+	});
+
 	it("uses the R2 model and strict schema with bounded lifecycle settings", async () => {
 		let observed: StructuredLlmRequest<unknown> | undefined;
 		await expect(

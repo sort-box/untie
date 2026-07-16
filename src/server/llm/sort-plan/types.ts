@@ -13,6 +13,23 @@ export interface GenerateSortPlanInput {
 	regenerationInstruction?: string;
 }
 
+export type SortPlanMetadataField = "extension" | "sizeBytes" | "modifiedAt";
+
+export interface SortPlanRequestDataManifest {
+	filenameCount: number;
+	metadata: {
+		fields: SortPlanMetadataField[];
+		valueCount: number;
+	};
+	contentSnippetCount: number;
+	documentCount: number;
+	opaqueIdCount: number;
+	candidateDestinationNameCount: number;
+	regenerationInstructionCount: number;
+	messageCount: number;
+	totalPayloadBytes: number;
+}
+
 export interface SortCategory {
 	name: string;
 	fileIds: string[];
