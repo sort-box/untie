@@ -9,6 +9,11 @@ const capabilityNames = Object.freeze([
 	"undo",
 	"revealItem",
 	"openItem",
+	"listChatSessions",
+	"loadChatSession",
+	"saveChatSession",
+	"deleteChatSession",
+	"deleteAllChatData",
 ]);
 
 const errorCodes = Object.freeze([
@@ -84,6 +89,77 @@ const nonEmptyString = (value) => typeof value === "string" && value.length > 0;
 const boolean = (value) => typeof value === "boolean";
 const stringArray = (value) =>
 	Array.isArray(value) && value.every((item) => nonEmptyString(item));
+
+// Chat persistence (P2). A session id is a path-free opaque token; the pattern
+// mirrors CHAT_SESSION_ID_PATTERN in chat-store.cjs (kept independent so this
+// module stays free of the fs-backed store in the sandboxed preload).
+const CHAT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const CHAT_MESSAGE_KINDS = Object.freeze([
+	"user",
+	"pending",
+	"progress",
+	"plan",
+	"result",
+	"undo",
+	"failed",
+]);
+const MAX_CHAT_MESSAGES = 5000;
+
+const timestamp = (value) => Number.isInteger(value) && value >= 0;
+const chatSessionId = (value) =>
+	typeof value === "string" && CHAT_SESSION_ID_PATTERN.test(value);
+
+// Messages are validated structurally, not exhaustively: every entry must be a
+// plain object carrying the shared base fields with a known kind. Kind-specific
+// fields are owned by the renderer message model and the store, so extra keys
+// are allowed here on purpose.
+const chatMessage = (value) =>
+	value !== null &&
+	typeof value === "object" &&
+	!Array.isArray(value) &&
+	nonEmptyString(value.id) &&
+	CHAT_MESSAGE_KINDS.includes(value.kind) &&
+	Number.isInteger(value.createdAt);
+const chatMessages = (value) =>
+	Array.isArray(value) &&
+	value.length <= MAX_CHAT_MESSAGES &&
+	value.every(chatMessage);
+
+const chatSessionValue = (value) =>
+	value !== null &&
+	typeof value === "object" &&
+	!Array.isArray(value) &&
+	chatSessionId(value.id) &&
+	typeof value.title === "string" &&
+	timestamp(value.createdAt) &&
+	timestamp(value.updatedAt) &&
+	chatMessages(value.messages);
+const nullableChatSession = (value) =>
+	value === null || chatSessionValue(value);
+
+const chatSummary = (value) =>
+	value !== null &&
+	typeof value === "object" &&
+	!Array.isArray(value) &&
+	chatSessionId(value.id) &&
+	typeof value.title === "string" &&
+	timestamp(value.createdAt) &&
+	timestamp(value.updatedAt) &&
+	Number.isInteger(value.messageCount) &&
+	value.messageCount >= 0;
+const chatSummaries = (value) =>
+	Array.isArray(value) && value.every(chatSummary);
+
+// A request addressing one session by opaque id. Stricter than opaqueIdRequest:
+// the id must also be path-free per CHAT_SESSION_ID_PATTERN.
+function opaqueChatSessionRequest(value) {
+	const checked = exactKeys(value, ["sessionId"], "request");
+	if (!checked.ok) return checked;
+	if (!chatSessionId(value.sessionId)) {
+		return validationError("sessionId must be a safe opaque chat id");
+	}
+	return valid({ sessionId: value.sessionId });
+}
 
 const contracts = Object.freeze({
 	ping: {
@@ -196,6 +272,56 @@ const contracts = Object.freeze({
 	openItem: {
 		request: opaqueIdRequest("itemId"),
 		response: exactResponse({ opened: boolean }),
+	},
+	listChatSessions: {
+		request: emptyObject,
+		response: exactResponse({ sessions: chatSummaries }),
+	},
+	loadChatSession: {
+		request: opaqueChatSessionRequest,
+		response: exactResponse({ session: nullableChatSession }),
+	},
+	saveChatSession: {
+		request(value) {
+			const checked = exactKeys(value, ["session"], "request");
+			if (!checked.ok) return checked;
+			const session = value.session;
+			const sessionCheck = exactKeys(
+				session,
+				["id", "createdAt", "messages"],
+				"session",
+			);
+			if (!sessionCheck.ok) return sessionCheck;
+			if (!chatSessionId(session.id)) {
+				return validationError("session.id must be a safe opaque chat id");
+			}
+			if (!timestamp(session.createdAt)) {
+				return validationError(
+					"session.createdAt must be a non-negative integer",
+				);
+			}
+			if (!chatMessages(session.messages)) {
+				return validationError(
+					"session.messages must be structured chat messages",
+				);
+			}
+			return valid({
+				session: {
+					id: session.id,
+					createdAt: session.createdAt,
+					messages: session.messages,
+				},
+			});
+		},
+		response: exactResponse({ session: chatSessionValue }),
+	},
+	deleteChatSession: {
+		request: opaqueChatSessionRequest,
+		response: exactResponse({ deleted: boolean }),
+	},
+	deleteAllChatData: {
+		request: emptyObject,
+		response: exactResponse({ deletedCount: (value) => timestamp(value) }),
 	},
 });
 

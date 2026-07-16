@@ -2,6 +2,11 @@ import { PlusIcon, SendIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "#/components/ui/button";
+import {
+	listChatSessions,
+	loadChatSession,
+	saveChatSession,
+} from "./chat-persistence";
 import { MessageCard } from "./message-card";
 import {
 	type ChatMessage,
@@ -18,21 +23,64 @@ import {
 
 const DEFAULT_REQUEST = "Sort my Downloads";
 
+function newSession() {
+	return { id: createMessageId(), createdAt: Date.now() };
+}
+
 /**
- * The main chat pane for the Untie shell (W12). Holds an in-memory transcript
- * (no persistence yet — W-later), a composer, a "New chat" affordance, and a
- * clearly-labelled dev toolbar that drives the mock sort simulation so the
- * message states can be round-tripped without a backend.
+ * The main chat pane for the Untie shell. Holds the transcript in memory and
+ * mirrors it to local, versioned storage through the capability IPC surface
+ * (P2): on start it resumes the most recent persisted chat, and it re-saves the
+ * session whenever the transcript changes so chats survive relaunch. Outside
+ * Electron (dev:web, tests) persistence degrades to an in-memory no-op. A
+ * clearly-labelled dev toolbar drives the mock sort simulation so the message
+ * states can be round-tripped without a backend.
  */
 export function ChatPane() {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [input, setInput] = useState("");
 	const [isRunning, setIsRunning] = useState(false);
+	// Identity of the chat currently shown; persisted writes key off this.
+	const sessionRef = useRef(newSession());
+	// Gate persistence until the initial resume has run, so hydration never
+	// overwrites a stored chat with the empty starting transcript.
+	const [isHydrated, setIsHydrated] = useState(false);
 	const driverRef = useRef<DriverHandle | null>(null);
 	const listEndRef = useRef<HTMLDivElement | null>(null);
 
 	// Cancel any in-flight mock driver when the pane unmounts.
 	useEffect(() => () => driverRef.current?.cancel(), []);
+
+	// Resume the most recent persisted chat on start.
+	useEffect(() => {
+		let cancelled = false;
+		void (async () => {
+			const sessions = await listChatSessions();
+			const latest = sessions[0];
+			if (latest) {
+				const resumed = await loadChatSession(latest.id);
+				if (!cancelled && resumed) {
+					sessionRef.current = {
+						id: resumed.id,
+						createdAt: resumed.createdAt,
+					};
+					setMessages([...resumed.messages]);
+				}
+			}
+			if (!cancelled) setIsHydrated(true);
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	// Mirror the transcript to local storage as it evolves. Empty transcripts are
+	// never persisted, so "New chat" leaves no empty session behind.
+	useEffect(() => {
+		if (!isHydrated || messages.length === 0) return;
+		const { id, createdAt } = sessionRef.current;
+		void saveChatSession({ id, createdAt, messages });
+	}, [messages, isHydrated]);
 
 	// Keep the newest message in view as the transcript grows.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript change.
@@ -103,6 +151,8 @@ export function ChatPane() {
 		setIsRunning(false);
 		setMessages([]);
 		setInput("");
+		// Start a fresh session; the prior chat stays persisted and resumable.
+		sessionRef.current = newSession();
 	};
 
 	const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
