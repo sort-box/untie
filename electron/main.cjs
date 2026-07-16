@@ -10,12 +10,14 @@ const {
 	createCapabilityAuthorizer,
 } = require("./capabilities/authorization.cjs");
 const { initializeLocalStores } = require("./local-store.cjs");
+const { initializeFileIndex } = require("./index-store.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
 const PRODUCTION_PORT = 3210;
 
 let productionServer;
 let unregisterCapabilityHandlers;
+let fileIndex;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -158,7 +160,9 @@ async function createWindow() {
 
 app.whenReady().then(async () => {
 	try {
-		initializeLocalStores(path.join(app.getPath("userData"), "stores"));
+		const storesDirectory = path.join(app.getPath("userData"), "stores");
+		initializeLocalStores(storesDirectory);
+		fileIndex = initializeFileIndex(storesDirectory);
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -182,6 +186,8 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
 	unregisterCapabilityHandlers?.();
+	fileIndex?.database.close();
+	fileIndex = undefined;
 	productionServer?.close();
 });
 
