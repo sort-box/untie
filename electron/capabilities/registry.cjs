@@ -3,6 +3,7 @@ const {
 	CapabilityAuthorizationError,
 	containsRendererPath,
 } = require("./authorization.cjs");
+const { RiskAcknowledgmentError } = require("../sort-risk.cjs");
 
 const INVOKE_CHANNEL = "untie:capability:invoke";
 const CANCEL_CHANNEL = "untie:capability:cancel";
@@ -79,6 +80,9 @@ function createCapabilityRegistry(implementations = {}, authorizer) {
 			}
 			if (error instanceof CapabilityAuthorizationError) {
 				return failure(error.code, error.message, error.details);
+			}
+			if (error instanceof RiskAcknowledgmentError) {
+				return failure(error.code, error.message);
 			}
 			return failure("INTERNAL", "Capability failed");
 		} finally {

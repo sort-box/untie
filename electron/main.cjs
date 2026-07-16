@@ -16,6 +16,10 @@ const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
 const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
 const {
+	createRiskAcknowledgmentStore,
+	createSortRiskService,
+} = require("./sort-risk.cjs");
+const {
 	createFolderGrantService,
 	createGrantStore,
 } = require("./grant-store.cjs");
@@ -31,6 +35,7 @@ let folderGrantService;
 let folderScanner;
 let opaqueFileRegistry;
 let indexSyncEngine;
+let sortRiskService;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -83,6 +88,13 @@ const capabilityImplementations = {
 			}),
 		};
 	},
+	classifyFolderRisk: async ({ grantId }, { signal, authorization }) =>
+		sortRiskService.classify({
+			grantId,
+			canonicalPath: authorization.grant.canonicalPath,
+			signal,
+		}),
+	acknowledgeFolderRisk: async (input) => sortRiskService.acknowledge(input),
 };
 
 const contentTypes = {
@@ -216,6 +228,10 @@ app.whenReady().then(async () => {
 		folderScanner = createFolderScanner({
 			appDataDirectory: app.getPath("userData"),
 		});
+		sortRiskService = createSortRiskService({
+			scanner: folderScanner,
+			acknowledgmentStore: createRiskAcknowledgmentStore(),
+		});
 		opaqueFileRegistry = createOpaqueFileRegistry({
 			referenceStore: capabilityReferenceStore,
 		});
@@ -257,6 +273,7 @@ app.on("before-quit", () => {
 	chatStore = undefined;
 	folderGrantService = undefined;
 	folderScanner = undefined;
+	sortRiskService = undefined;
 	opaqueFileRegistry = undefined;
 	indexSyncEngine = undefined;
 	productionServer?.close();

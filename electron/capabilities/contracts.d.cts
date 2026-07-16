@@ -11,7 +11,11 @@ export type CapabilityErrorCode =
 	| "NOT_CONTAINED"
 	| "PATH_SUPPLIED"
 	| "EXPIRED_ID"
-	| "INVALIDATED_ID";
+	| "INVALIDATED_ID"
+	| "UNKNOWN_RISK_CLASSIFICATION"
+	| "UNKNOWN_ACKNOWLEDGMENT_TOKEN"
+	| "ACKNOWLEDGMENT_TOKEN_CONSUMED"
+	| "ACKNOWLEDGMENT_TOKEN_MISMATCH";
 
 export type CapabilityError = {
 	code: CapabilityErrorCode;
@@ -53,6 +57,20 @@ export type ScanFolderResult = {
 	readonly files: ScanFileEntry[];
 	readonly candidateDestinations: ScanNamedEntry[];
 	readonly skipped: ScanSkippedEntry[];
+};
+export type SortRiskCode =
+	| "FILE_COUNT_TOO_LARGE"
+	| "TOTAL_SIZE_TOO_LARGE"
+	| "TOOL_MANAGED_FOLDER";
+export type SortRiskClassification = {
+	readonly classificationId: string;
+	readonly risky: boolean;
+	readonly risks: readonly {
+		readonly code: SortRiskCode;
+		readonly reason: string;
+	}[];
+	readonly metrics: { readonly fileCount: number; readonly totalBytes: number };
+	readonly toolMarkers: readonly string[];
 };
 
 // Chat persistence (P2). Messages are typed loosely at the capability boundary
@@ -113,6 +131,14 @@ export interface CapabilityMap {
 	scanFolder: {
 		request: OpaqueIdRequest<"grantId">;
 		response: ScanFolderResult;
+	};
+	classifyFolderRisk: {
+		request: OpaqueIdRequest<"grantId">;
+		response: SortRiskClassification;
+	};
+	acknowledgeFolderRisk: {
+		request: OpaqueIdRequest<"classificationId">;
+		response: { acknowledgmentToken: string };
 	};
 	queryIndex: {
 		request: { query: string; limit?: number };

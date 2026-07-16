@@ -33,8 +33,10 @@ describe("sandboxed preload bridge", () => {
 
 		expect(Object.keys(exposed ?? {}).sort()).toEqual(
 			[
+				"acknowledgeFolderRisk",
 				"applyPlan",
 				"cancellableDelay",
+				"classifyFolderRisk",
 				"deleteAllChatData",
 				"deleteChatSession",
 				"listChatSessions",

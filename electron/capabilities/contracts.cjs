@@ -5,6 +5,8 @@ const capabilityNames = Object.freeze([
 	"listFolderGrants",
 	"revokeFolderGrant",
 	"scanFolder",
+	"classifyFolderRisk",
+	"acknowledgeFolderRisk",
 	"queryIndex",
 	"preparePlan",
 	"applyPlan",
@@ -32,6 +34,10 @@ const errorCodes = Object.freeze([
 	"PATH_SUPPLIED",
 	"EXPIRED_ID",
 	"INVALIDATED_ID",
+	"UNKNOWN_RISK_CLASSIFICATION",
+	"UNKNOWN_ACKNOWLEDGMENT_TOKEN",
+	"ACKNOWLEDGMENT_TOKEN_CONSUMED",
+	"ACKNOWLEDGMENT_TOKEN_MISMATCH",
 ]);
 
 function validationError(message) {
@@ -118,6 +124,20 @@ const scanSkippedEntries = (value) =>
 			exactResponse({
 				name: nonEmptyString,
 				reason: (reason) => scanSkipReasons.includes(reason),
+			})(entry).ok,
+	);
+const riskCodes = Object.freeze([
+	"FILE_COUNT_TOO_LARGE",
+	"TOTAL_SIZE_TOO_LARGE",
+	"TOOL_MANAGED_FOLDER",
+]);
+const riskEntries = (value) =>
+	Array.isArray(value) &&
+	value.every(
+		(entry) =>
+			exactResponse({
+				code: (code) => riskCodes.includes(code),
+				reason: nonEmptyString,
 			})(entry).ok,
 	);
 
@@ -245,6 +265,24 @@ const contracts = Object.freeze({
 			candidateDestinations: scanNamedEntries,
 			skipped: scanSkippedEntries,
 		}),
+	},
+	classifyFolderRisk: {
+		request: opaqueIdRequest("grantId"),
+		response: exactResponse({
+			classificationId: nonEmptyString,
+			risky: boolean,
+			risks: riskEntries,
+			metrics: (value) =>
+				exactResponse({
+					fileCount: (count) => Number.isSafeInteger(count) && count >= 0,
+					totalBytes: (bytes) => Number.isSafeInteger(bytes) && bytes >= 0,
+				})(value).ok,
+			toolMarkers: stringArray,
+		}),
+	},
+	acknowledgeFolderRisk: {
+		request: opaqueIdRequest("classificationId"),
+		response: exactResponse({ acknowledgmentToken: nonEmptyString }),
 	},
 	queryIndex: {
 		request(value) {
