@@ -96,6 +96,38 @@ describe("grant-scoped index synchronization", () => {
 		index.database.close();
 	});
 
+	test("only a complete scan restores freshness, including changes during a scan", async () => {
+		let releaseScan;
+		const scanStarted = new Promise((resolve) => {
+			releaseScan = resolve;
+		});
+		let continueScan;
+		const scanBlocked = new Promise((resolve) => {
+			continueScan = resolve;
+		});
+		const { index, engine } = setup({
+			scanner: {
+				async scanFolder() {
+					releaseScan();
+					await scanBlocked;
+					return { files: [], candidateDestinations: [], skipped: [] };
+				},
+			},
+		});
+
+		expect(engine.markStale("grant_test").state).toBe("stale");
+		const firstSync = engine.syncGrant("grant_test");
+		await scanStarted;
+		engine.markStale("grant_test");
+		continueScan();
+		await firstSync;
+		expect(engine.getStatus("grant_test").state).toBe("stale");
+
+		await engine.syncGrant("grant_test");
+		expect(engine.getStatus("grant_test").state).toBe("idle");
+		index.database.close();
+	});
+
 	test("re-sync adds, updates, removes, and treats a rename as the same identity", async () => {
 		const { granted, index, engine } = setup();
 		const movedFrom = path.join(granted, "before.txt");

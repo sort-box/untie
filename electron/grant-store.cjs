@@ -139,6 +139,7 @@ function createFolderGrantService({
 	fsApi = fs,
 	now = Date.now,
 	randomUUID: random = randomUUID,
+	onGrantStateChange,
 }) {
 	function referenceStatus(state) {
 		if (state === "active") return "active";
@@ -153,6 +154,7 @@ function createFolderGrantService({
 			status: referenceStatus(grant.state),
 			revision: grant.revision,
 		});
+		onGrantStateChange?.(publicGrant(grant));
 	}
 
 	function check(grant) {
