@@ -24,6 +24,10 @@ import {
 	planCreatedFolderCount,
 	planMoveCount,
 } from "./message-model";
+import type {
+	SortDisclosureItem,
+	SortDisclosureRequest,
+} from "./sort-disclosure-model";
 
 /** One scripted transition: apply `message` after waiting `delayMs`. */
 export interface DriverStep {
@@ -120,6 +124,156 @@ const MOCK_PLAN_FOLDERS: readonly PlanFolder[] = [
 		files: ["notes.pdf", "boarding-pass.pdf"],
 	},
 ];
+
+// ── S3 disclosure mock ──────────────────────────────────────────────────────
+// The exact outbound file records the pre-send disclosure gate would describe
+// for "Sort my Downloads": each item is the payload record (opaque id + display
+// name + metadata + optional content snippet) plus a human `category` used only
+// to group the exclusion controls. The `displayName` values ARE the data that
+// would be transmitted; the disclosure panel measures them via the S2 manifest
+// but never renders them (PRD §8 — filenames are sensitive). Deleted wholesale
+// once the real scan/manifest IPC (W9/S2) feeds live data in.
+const MOCK_REQUEST_ITEMS: readonly SortDisclosureItem[] = [
+	{
+		category: "PDF documents",
+		file: {
+			id: "req-1",
+			displayName: "apartment-lease-2025.pdf",
+			extension: "pdf",
+			sizeBytes: 184_320,
+			modifiedAt: "2026-04-02T09:14:00Z",
+			excerpt: "Residential lease agreement between tenant and landlord…",
+		},
+	},
+	{
+		category: "PDF documents",
+		file: {
+			id: "req-2",
+			displayName: "acme-invoice-2026.pdf",
+			extension: "pdf",
+			sizeBytes: 88_200,
+			modifiedAt: "2026-05-11T15:02:00Z",
+			excerpt: "Invoice #4821 — amount due within 30 days…",
+		},
+	},
+	{
+		category: "PDF documents",
+		file: {
+			id: "req-3",
+			displayName: "nda-signed.pdf",
+			extension: "pdf",
+			sizeBytes: 51_900,
+			modifiedAt: "2026-03-20T11:41:00Z",
+			excerpt: "Mutual non-disclosure agreement, effective…",
+		},
+	},
+	{
+		category: "PDF documents",
+		file: {
+			id: "req-4",
+			displayName: "boarding-pass.pdf",
+			extension: "pdf",
+			sizeBytes: 22_400,
+			modifiedAt: "2026-06-01T06:20:00Z",
+			excerpt: "Boarding pass — gate B12, seat 14C…",
+		},
+	},
+	{
+		category: "Screenshots",
+		file: {
+			id: "req-5",
+			displayName: "Screenshot 2026-05-01 at 09.14.png",
+			extension: "png",
+			sizeBytes: 412_000,
+			modifiedAt: "2026-05-01T09:14:00Z",
+		},
+	},
+	{
+		category: "Screenshots",
+		file: {
+			id: "req-6",
+			displayName: "Screenshot 2026-05-12 at 17.45.png",
+			extension: "png",
+			sizeBytes: 388_400,
+			modifiedAt: "2026-05-12T17:45:00Z",
+		},
+	},
+	{
+		category: "Screenshots",
+		file: {
+			id: "req-7",
+			displayName: "Screenshot 2026-05-24.png",
+			extension: "png",
+			sizeBytes: 401_100,
+			modifiedAt: "2026-05-24T08:03:00Z",
+		},
+	},
+	{
+		category: "Installers",
+		file: {
+			id: "req-8",
+			displayName: "Figma-124.dmg",
+			extension: "dmg",
+			sizeBytes: 96_400_000,
+		},
+	},
+	{
+		category: "Installers",
+		file: {
+			id: "req-9",
+			displayName: "node-v22.pkg",
+			extension: "pkg",
+			sizeBytes: 44_800_000,
+		},
+	},
+	{
+		category: "Photos",
+		file: {
+			id: "req-10",
+			displayName: "IMG_2201.jpg",
+			extension: "jpg",
+			sizeBytes: 3_120_000,
+			modifiedAt: "2026-04-18T13:30:00Z",
+		},
+	},
+	{
+		category: "Photos",
+		file: {
+			id: "req-11",
+			displayName: "IMG_2205.jpg",
+			extension: "jpg",
+			sizeBytes: 2_980_000,
+			modifiedAt: "2026-04-18T13:34:00Z",
+		},
+	},
+	{
+		category: "Photos",
+		file: {
+			id: "req-12",
+			displayName: "IMG_2207.jpg",
+			extension: "jpg",
+			sizeBytes: 3_050_000,
+			modifiedAt: "2026-04-18T13:37:00Z",
+		},
+	},
+];
+
+/**
+ * A believable pre-send sort request for the S3 disclosure gate. The disclosure
+ * panel computes the S2 manifest from these exact records, so the counts it
+ * shows equal the counts that would be sent.
+ */
+export function buildMockSortRequest(): SortDisclosureRequest {
+	return {
+		locationLabel: "Downloads",
+		candidateDestinationNames: [
+			"Invoices & Receipts",
+			"Contracts",
+			"Documents",
+		],
+		items: MOCK_REQUEST_ITEMS,
+	};
+}
 
 const SCAN_PROGRESS_TOTAL = 3;
 

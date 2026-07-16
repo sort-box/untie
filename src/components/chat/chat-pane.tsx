@@ -14,6 +14,7 @@ import {
 import {
 	buildApplySteps,
 	buildInvalidPlan,
+	buildMockSortRequest,
 	buildSortFailure,
 	buildSortPlanSteps,
 	buildStalePlan,
@@ -21,6 +22,11 @@ import {
 	type DriverHandle,
 	runDriverSteps,
 } from "./mock-sort-driver";
+import { SortDisclosure } from "./sort-disclosure";
+import type {
+	GenerateSortPlanInput,
+	SortDisclosureRequest,
+} from "./sort-disclosure-model";
 
 const DEFAULT_REQUEST = "Sort my Downloads";
 
@@ -55,6 +61,10 @@ export function ChatPane({
 	]);
 	const [input, setInput] = useState("");
 	const [isRunning, setIsRunning] = useState(false);
+	// S3 pre-send gate: while set, the disclosure panel is shown and NOTHING has
+	// been transmitted yet. Confirm sends the payload; cancel clears it.
+	const [pendingDisclosure, setPendingDisclosure] =
+		useState<SortDisclosureRequest | null>(null);
 	const driverRef = useRef<DriverHandle | null>(null);
 	const listEndRef = useRef<HTMLDivElement | null>(null);
 	// Keep the latest callback without making it a persist-effect dependency.
@@ -90,11 +100,11 @@ export function ChatPane({
 		};
 	}, [messages, session.id, session.createdAt]);
 
-	// Keep the newest message in view as the transcript grows.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript change.
+	// Keep the newest message (or the pending disclosure gate) in view.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript/gate change.
 	useEffect(() => {
 		listEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-	}, [messages]);
+	}, [messages, pendingDisclosure]);
 
 	const lastResult = useMemo(
 		() => [...messages].reverse().find((message) => message.kind === "result"),
@@ -114,6 +124,9 @@ export function ChatPane({
 		[messages],
 	);
 
+	// Nothing may be sent or simulated while the disclosure gate is open.
+	const isBusy = isRunning || pendingDisclosure !== null;
+
 	const apply = (message: ChatMessage) =>
 		setMessages((prev) => upsertMessage(prev, message));
 
@@ -125,7 +138,7 @@ export function ChatPane({
 
 	const startSort = (request: string) => {
 		const text = request.trim();
-		if (!text || isRunning) return;
+		if (!text || isBusy) return;
 		apply({
 			kind: "user",
 			id: createMessageId(),
@@ -133,10 +146,26 @@ export function ChatPane({
 			text,
 		});
 		setInput("");
-		// Stops at a `ready` plan; the plan card owns approval from here (W13).
+		// S3: gate the request behind a per-request disclosure. Nothing leaves the
+		// device until the user confirms exactly what would be sent.
+		setPendingDisclosure(buildMockSortRequest());
+	};
+
+	// Confirm transmission: the disclosed payload (`input`) is what leaves the
+	// device. In production this vetted payload goes to the sort-plan endpoint
+	// (S2/W9); the mock stops at a `ready` plan the card owns approval of (W13).
+	const confirmDisclosure = (input: GenerateSortPlanInput) => {
+		// Defence in depth: never transmit an empty request.
+		if (isRunning || input.files.length === 0) return;
+		setPendingDisclosure(null);
 		runSteps(
 			buildSortPlanSteps({ assistantId: createMessageId(), now: Date.now() }),
 		);
+	};
+
+	// Cancel: close the gate. Nothing was transmitted.
+	const cancelDisclosure = () => {
+		setPendingDisclosure(null);
 	};
 
 	// Approve a reviewed plan. Only a `ready` plan can be approved; the plan card
@@ -144,7 +173,7 @@ export function ChatPane({
 	// card is locked to `approved` first (preventing a double-submit) and then the
 	// apply simulation runs, standing in for the journaled apply engine (W14).
 	const approvePlan = (plan: PlanMessage) => {
-		if (isRunning || plan.status !== "ready") return;
+		if (isBusy || plan.status !== "ready") return;
 		apply({ ...plan, status: "approved" });
 		runSteps(
 			buildApplySteps({
@@ -156,7 +185,7 @@ export function ChatPane({
 	};
 
 	const simulateFailure = () => {
-		if (isRunning) return;
+		if (isBusy) return;
 		apply({
 			kind: "user",
 			id: createMessageId(),
@@ -171,7 +200,7 @@ export function ChatPane({
 	// Invalidate the pending plan in place, as W11 marks a prepared snapshot
 	// unusable when the folder changes underneath it. Approval is now blocked.
 	const markPlanStale = () => {
-		if (isRunning || !latestReadyPlan) return;
+		if (isBusy || !latestReadyPlan) return;
 		apply(
 			buildStalePlan({
 				id: latestReadyPlan.id,
@@ -182,7 +211,7 @@ export function ChatPane({
 	};
 
 	const simulateInvalidPlan = () => {
-		if (isRunning) return;
+		if (isBusy) return;
 		apply({
 			kind: "user",
 			id: createMessageId(),
@@ -193,7 +222,7 @@ export function ChatPane({
 	};
 
 	const simulateUndo = () => {
-		if (isRunning || !lastResult) return;
+		if (isBusy || !lastResult) return;
 		apply(
 			buildUndoMessage({
 				id: createMessageId(),
@@ -240,6 +269,15 @@ export function ChatPane({
 							))}
 						</ol>
 					)}
+					{pendingDisclosure ? (
+						<div className="mt-4">
+							<SortDisclosure
+								request={pendingDisclosure}
+								onConfirm={confirmDisclosure}
+								onCancel={cancelDisclosure}
+							/>
+						</div>
+					) : null}
 					<div ref={listEndRef} />
 				</div>
 
@@ -267,7 +305,7 @@ export function ChatPane({
 					<Button
 						type="submit"
 						size="icon"
-						disabled={isRunning}
+						disabled={isBusy}
 						aria-label="Send message"
 					>
 						<SendIcon />
@@ -276,7 +314,7 @@ export function ChatPane({
 			</div>
 
 			<DevToolbar
-				isRunning={isRunning}
+				isRunning={isBusy}
 				canUndo={Boolean(lastResult)}
 				canMarkStale={Boolean(latestReadyPlan)}
 				onSort={() => startSort(DEFAULT_REQUEST)}

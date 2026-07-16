@@ -24,10 +24,16 @@ const approveButton = () =>
 		{ timeout: 6000 },
 	) as Promise<HTMLButtonElement>;
 
+/** Open the sort, then confirm the S3 disclosure so the request is transmitted. */
+const sendThroughDisclosure = async () => {
+	fireEvent.click(screen.getByRole("button", { name: "Simulate sort" }));
+	fireEvent.click(await screen.findByRole("button", { name: /send to ai/i }));
+};
+
 describe("ChatPane approval flow (W13)", () => {
 	it("stops at a ready plan, then applies it to a result on approve", async () => {
 		render(<ChatPane session={session} initialMessages={[]} />);
-		fireEvent.click(screen.getByRole("button", { name: "Simulate sort" }));
+		await sendThroughDisclosure();
 
 		// The plan is presented for review — approvable, and not auto-applied.
 		const approve = await approveButton();
@@ -43,7 +49,7 @@ describe("ChatPane approval flow (W13)", () => {
 
 	it("blocks approval when the pending plan is marked stale", async () => {
 		render(<ChatPane session={session} initialMessages={[]} />);
-		fireEvent.click(screen.getByRole("button", { name: "Simulate sort" }));
+		await sendThroughDisclosure();
 
 		const approve = await approveButton();
 		expect(approve.disabled).toBe(false);
@@ -55,5 +61,45 @@ describe("ChatPane approval flow (W13)", () => {
 		expect(blocked).toBe(true);
 		expect(screen.getByText(/out of date/i)).toBeTruthy();
 		expect(screen.queryByText("Sort complete")).toBeNull();
+	}, 15000);
+});
+
+describe("ChatPane per-request disclosure gate (S3)", () => {
+	it("gates the sort behind a disclosure and sends nothing on cancel", async () => {
+		render(<ChatPane session={session} initialMessages={[]} />);
+		fireEvent.click(screen.getByRole("button", { name: "Simulate sort" }));
+
+		// The disclosure blocks transmission and states what would leave the device.
+		expect(await screen.findByText(/this will send/i)).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+		// The gate is gone and nothing was transmitted — no scan/plan is started,
+		// even after the mock driver's first step would have fired.
+		expect(screen.queryByText(/this will send/i)).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(screen.queryByText("Scanning Downloads…")).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /approve & sort/i }),
+		).toBeNull();
+	}, 15000);
+
+	it("transmits the request only after the disclosure is confirmed", async () => {
+		render(<ChatPane session={session} initialMessages={[]} />);
+		fireEvent.click(screen.getByRole("button", { name: "Simulate sort" }));
+
+		// Nothing runs while the gate is open.
+		await screen.findByText(/this will send/i);
+		expect(screen.queryByText("Scanning Downloads…")).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: /send to ai/i }));
+
+		// Confirming transmits the request, which lands a reviewable plan.
+		const approve = await screen.findByRole(
+			"button",
+			{ name: /approve & sort/i },
+			{ timeout: 6000 },
+		);
+		expect((approve as HTMLButtonElement).disabled).toBe(false);
 	}, 15000);
 });
