@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
+const { privacyLogger } = require("../privacy-log.cjs");
 
 // Local chat persistence (P2). Chat sessions live as one JSON document per
 // session inside the W1 `chat` store's `history/` directory. Each document
@@ -270,10 +271,7 @@ function createChatStore(directory) {
 				if (session) summaries.push(toSummary(session));
 			} catch (error) {
 				// A single corrupt or unreadable chat must not hide every other one.
-				console.warn(
-					`Untie skipped an unreadable chat session (${id}).`,
-					error?.code ?? error,
-				);
+				privacyLogger.reportCrash("chat_session_read_failed", error);
 			}
 		}
 		summaries.sort(

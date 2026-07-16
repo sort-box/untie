@@ -1,3 +1,4 @@
+import { privacyLogger } from "../../../privacy-log.cjs";
 import { ServerAuthError } from "../auth/errors";
 import { requireServerIdentity } from "../auth/identity.server";
 import { ConvexTokenQuotaStore } from "./convex-token-quota.server";
@@ -52,7 +53,7 @@ function logLlmGatewayEvent(event: {
 	reservedTokens: number;
 	actualTokens?: number;
 }): void {
-	console.info("llm_gateway", event);
+	privacyLogger.log("info", "llm_gateway", event);
 }
 
 function hasConvexAudience(audience: unknown): boolean {
