@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { LlmCancelledError } from "./errors";
 import type { LlmResult, LlmService, StructuredLlmRequest } from "./types";
 import {
 	estimateInputTokens,
@@ -54,7 +55,10 @@ describe("UsageLimitedLlmService", () => {
 		await limited.generateText(request);
 
 		expect(quota.reserve).toHaveBeenCalledWith(124);
-		expect(service.generateText).toHaveBeenCalledWith(request);
+		expect(service.generateText).toHaveBeenCalledWith({
+			...request,
+			requestId: expect.any(String),
+		});
 		expect(quota.settle).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "reservation-1" }),
 			125,
@@ -82,7 +86,12 @@ describe("UsageLimitedLlmService", () => {
 			limited.generateText({
 				messages: [{ role: "user", content: "Hello" }],
 			}),
-		).rejects.toBe(expected);
+		).rejects.toMatchObject({
+			code: "REQUEST_FAILED",
+			retryable: true,
+			cause: expected,
+			requestId: expect.any(String),
+		});
 		expect(quota.settle).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "reservation-1" }),
 			0,
@@ -122,6 +131,8 @@ describe("UsageLimitedLlmService", () => {
 			}),
 		).rejects.toMatchObject({
 			code: "ACCOUNT_TOKEN_QUOTA_EXCEEDED",
+			classification: "terminal",
+			requestId: expect.any(String),
 			limit: 100,
 			remaining: 5,
 			resetsAt: 123,
@@ -187,6 +198,7 @@ describe("UsageLimitedLlmService", () => {
 		const limited = new UsageLimitedLlmService(service, quota, {
 			accountRef: "user_opaque_123",
 			logger: (event) => events.push(event),
+			requestIdFactory: () => "safe-request-id",
 		});
 
 		await limited.generateText({
@@ -204,6 +216,7 @@ describe("UsageLimitedLlmService", () => {
 		expect(events).toEqual([
 			{
 				accountRef: "user_opaque_123",
+				requestId: "safe-request-id",
 				model: "test/model",
 				status: "completed",
 				reservedTokens: 4_100,
@@ -220,5 +233,41 @@ describe("UsageLimitedLlmService", () => {
 		]) {
 			expect(output).not.toContain(sensitive);
 		}
+	});
+
+	it("settles a quota reservation after caller cancellation", async () => {
+		const reservation = { id: "reservation-cancel", reservedTokens: 100 };
+		const quota: TokenQuotaStore = {
+			reserve: vi.fn(async () => reservation),
+			settle: vi.fn(async () => undefined),
+		};
+		let receivedSignal: AbortSignal | undefined;
+		const service: LlmService = {
+			generateText: vi.fn(async (request): Promise<LlmResult<string>> => {
+				receivedSignal = request.signal;
+				return await new Promise((_resolve, reject) => {
+					request.signal?.addEventListener("abort", () =>
+						reject(new LlmCancelledError()),
+					);
+				});
+			}),
+			generateObject: vi.fn(),
+		};
+		const limited = new UsageLimitedLlmService(service, quota, {
+			requestIdFactory: () => "cancel-lifecycle-id",
+		});
+		const controller = new AbortController();
+		const result = limited.generateText({
+			messages: [{ role: "user", content: "Hello" }],
+			signal: controller.signal,
+		});
+		await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+		controller.abort();
+		await expect(result).rejects.toMatchObject({
+			code: "REQUEST_CANCELLED",
+			requestId: "cancel-lifecycle-id",
+		});
+		expect(receivedSignal?.aborted).toBe(true);
+		expect(quota.settle).toHaveBeenCalledWith(reservation, 0);
 	});
 });
