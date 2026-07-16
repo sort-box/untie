@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { Readable } = require("node:stream");
 const { pathToFileURL } = require("node:url");
 const { registerCapabilityHandlers } = require("./capabilities/registry.cjs");
+const { initializeLocalStores } = require("./local-store.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
 const PRODUCTION_PORT = 3210;
@@ -148,6 +149,17 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+	try {
+		initializeLocalStores(path.join(app.getPath("userData"), "stores"));
+	} catch (error) {
+		console.error("Untie could not open its local stores.", error);
+		dialog.showErrorBox(
+			"Untie could not start safely",
+			"Your local data could not be opened. Untie did not delete or reset it. Please update or contact support before trying again.",
+		);
+		app.quit();
+		return;
+	}
 	unregisterCapabilityHandlers = registerCapabilityHandlers(
 		ipcMain,
 		capabilityImplementations,
