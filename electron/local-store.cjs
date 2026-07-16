@@ -7,12 +7,30 @@ const STORE_DEFINITIONS = Object.freeze({
 	db: Object.freeze({ version: 1, entries: ["index.sqlite"] }),
 	journal: Object.freeze({ version: 1, entries: ["operations"] }),
 	chat: Object.freeze({ version: 2, entries: ["history", "attachments"] }),
+	grants: Object.freeze({ version: 2, entries: ["grants.json"] }),
 });
 
 const STORE_MIGRATIONS = Object.freeze({
 	chat: Object.freeze({
 		1: (directory) => {
 			fs.mkdirSync(path.join(directory, "attachments"), { mode: 0o700 });
+		},
+	}),
+	grants: Object.freeze({
+		1: (directory) => {
+			const grantsFile = path.join(directory, "grants.json");
+			if (!fs.existsSync(grantsFile)) {
+				fs.writeFileSync(grantsFile, '{"grants":[]}\n', { mode: 0o600 });
+				return;
+			}
+			const legacy = JSON.parse(fs.readFileSync(grantsFile, "utf8"));
+			if (Array.isArray(legacy)) {
+				fs.writeFileSync(
+					grantsFile,
+					`${JSON.stringify({ grants: legacy }, null, 2)}\n`,
+					"utf8",
+				);
+			}
 		},
 	}),
 });

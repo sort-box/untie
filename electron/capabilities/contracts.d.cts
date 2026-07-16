@@ -29,6 +29,12 @@ export type PlanOperation = {
 		| { existingFolderId: string; newFolderName?: never }
 		| { existingFolderId?: never; newFolderName: string };
 };
+export type FolderGrantState = "active" | "missing" | "moved" | "revoked";
+export type FolderGrant = {
+	readonly grantId: string;
+	readonly state: FolderGrantState;
+	readonly createdAt: number;
+};
 
 // Chat persistence (P2). Messages are typed loosely at the capability boundary
 // by their shared base fields only: the concrete `ChatMessage` union lives in
@@ -75,7 +81,15 @@ export interface CapabilityMap {
 	};
 	selectFolder: {
 		request: Record<never, never>;
-		response: { grantId: string };
+		response: { grantId: string | null };
+	};
+	listFolderGrants: {
+		request: Record<never, never>;
+		response: { grants: FolderGrant[] };
+	};
+	revokeFolderGrant: {
+		request: OpaqueIdRequest<"grantId">;
+		response: { revoked: boolean };
 	};
 	scanFolder: {
 		request: OpaqueIdRequest<"grantId">;

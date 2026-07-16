@@ -12,6 +12,10 @@ const {
 const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createChatStore } = require("./chat-store.cjs");
+const {
+	createFolderGrantService,
+	createGrantStore,
+} = require("./grant-store.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
 const PRODUCTION_PORT = 3210;
@@ -20,6 +24,7 @@ let productionServer;
 let unregisterCapabilityHandlers;
 let fileIndex;
 let chatStore;
+let folderGrantService;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
@@ -55,6 +60,9 @@ const capabilityImplementations = {
 	deleteChatSession: async ({ sessionId }) =>
 		requireChatStore().deleteSession(sessionId),
 	deleteAllChatData: async () => requireChatStore().deleteAll(),
+	selectFolder: async () => folderGrantService.selectFolder(),
+	listFolderGrants: async () => folderGrantService.listGrants(),
+	revokeFolderGrant: async (input) => folderGrantService.revokeGrant(input),
 };
 
 const contentTypes = {
@@ -176,9 +184,15 @@ async function createWindow() {
 app.whenReady().then(async () => {
 	try {
 		const storesDirectory = path.join(app.getPath("userData"), "stores");
-		initializeLocalStores(storesDirectory);
+		const localStores = initializeLocalStores(storesDirectory);
 		fileIndex = initializeFileIndex(storesDirectory);
 		chatStore = createChatStore(path.join(storesDirectory, "chat", "history"));
+		folderGrantService = createFolderGrantService({
+			store: createGrantStore(localStores.stores.grants.directory),
+			referenceStore: capabilityReferenceStore,
+			showOpenDialog: (options) => dialog.showOpenDialog(options),
+		});
+		folderGrantService.restore();
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -205,6 +219,7 @@ app.on("before-quit", () => {
 	fileIndex?.database.close();
 	fileIndex = undefined;
 	chatStore = undefined;
+	folderGrantService = undefined;
 	productionServer?.close();
 });
 
