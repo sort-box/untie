@@ -11,6 +11,7 @@ const {
 } = require("./capabilities/authorization.cjs");
 const { initializeLocalStores } = require("./local-store.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
+const { createChatStore } = require("./chat-store.cjs");
 
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "http://127.0.0.1:3000";
 const PRODUCTION_PORT = 3210;
@@ -18,10 +19,16 @@ const PRODUCTION_PORT = 3210;
 let productionServer;
 let unregisterCapabilityHandlers;
 let fileIndex;
+let chatStore;
 const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
 });
+
+function requireChatStore() {
+	if (!chatStore) throw new Error("The chat store is not initialized.");
+	return chatStore;
+}
 
 const capabilityImplementations = {
 	ping: async ({ message }) => ({ message }),
@@ -40,6 +47,14 @@ const capabilityImplementations = {
 				{ once: true },
 			);
 		}),
+	listChatSessions: async () => requireChatStore().listSessions(),
+	loadChatSession: async ({ sessionId }) =>
+		requireChatStore().loadSession(sessionId),
+	saveChatSession: async ({ session }) =>
+		requireChatStore().saveSession(session),
+	deleteChatSession: async ({ sessionId }) =>
+		requireChatStore().deleteSession(sessionId),
+	deleteAllChatData: async () => requireChatStore().deleteAll(),
 };
 
 const contentTypes = {
@@ -163,6 +178,7 @@ app.whenReady().then(async () => {
 		const storesDirectory = path.join(app.getPath("userData"), "stores");
 		initializeLocalStores(storesDirectory);
 		fileIndex = initializeFileIndex(storesDirectory);
+		chatStore = createChatStore(path.join(storesDirectory, "chat", "history"));
 	} catch (error) {
 		console.error("Untie could not open its local stores.", error);
 		dialog.showErrorBox(
@@ -188,6 +204,7 @@ app.on("before-quit", () => {
 	unregisterCapabilityHandlers?.();
 	fileIndex?.database.close();
 	fileIndex = undefined;
+	chatStore = undefined;
 	productionServer?.close();
 });
 
