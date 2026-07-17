@@ -201,8 +201,26 @@ export interface CapabilityMap {
 		response: { acknowledgmentToken: string };
 	};
 	queryIndex: {
-		request: { query: string; limit?: number };
-		response: { itemIds: string[] };
+		request: {
+			grantId: string;
+			interpretedQuery: {
+				searchTerms: string[];
+				filters: {
+					extensions: string[];
+					namePatterns: string[];
+					modifiedAt: { after: string | null; before: string | null } | null;
+				};
+			};
+			limit?: number;
+		};
+		response: {
+			partial: boolean;
+			candidates: Array<{
+				itemId: string;
+				displayName: string;
+				snippet: string;
+			}>;
+		};
 	};
 	preparePlan: {
 		request: { grantId: string; operations: PlanOperation[] };

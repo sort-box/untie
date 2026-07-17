@@ -90,6 +90,94 @@ function createOpaqueFileRegistry({
 		});
 	}
 
+	function captureIndexed(canonicalGrantPath, candidate) {
+		let canonicalPath;
+		try {
+			canonicalPath = canonicalizePath(candidate, fsApi);
+		} catch (error) {
+			if (error?.code === "STALE_REFERENCE") return null;
+			throw error;
+		}
+		if (!isContained(canonicalGrantPath, canonicalPath)) {
+			throw new CapabilityAuthorizationError(
+				"NOT_CONTAINED",
+				"Indexed file resolves outside the granted folder",
+			);
+		}
+		let stat;
+		try {
+			stat = fsApi.statSync(canonicalPath);
+		} catch {
+			return null;
+		}
+		if (!stat.isFile()) return null;
+		return Object.freeze({
+			canonicalPath,
+			size: stat.size,
+			mtimeMs: stat.mtimeMs,
+			dev: stat.dev,
+			ino: stat.ino,
+		});
+	}
+
+	function registerSnapshots({ grant, files, snapshotFor }) {
+		const issuedAt = now();
+		return files.map((file) => {
+			const snapshot = snapshotFor(file);
+			const key = sourceKey(grant.id, snapshot.canonicalPath);
+			let record = currentBySource.get(key);
+			if (
+				record &&
+				(record.expiresAt <= issuedAt ||
+					record.reference.grantRevision !== grant.revision ||
+					!sameSnapshot(record.snapshot, snapshot))
+			) {
+				invalidate(record);
+				record = undefined;
+			}
+			if (!record) {
+				const id = newFileId(random);
+				const expiresAt = issuedAt + ttlMs;
+				const reference = Object.freeze({
+					id,
+					path: snapshot.canonicalPath,
+					grantId: grant.id,
+					grantRevision: grant.revision,
+					expiresAt,
+					snapshot,
+					status: "active",
+				});
+				record = { id, key, snapshot, expiresAt, status: "active", reference };
+				byId.set(id, record);
+				currentBySource.set(key, record);
+				referenceStore.setItem(reference);
+			}
+			return Object.freeze({ itemId: record.id, name: file.name });
+		});
+	}
+
+	function registerIndexedResults({ grant, canonicalGrantPath, files }) {
+		const sourceIndexes = [];
+		const availableFiles = [];
+		const snapshots = new Map();
+		for (const [sourceIndex, file] of files.entries()) {
+			const snapshot = captureIndexed(canonicalGrantPath, file.path);
+			if (!snapshot) continue;
+			sourceIndexes.push(sourceIndex);
+			availableFiles.push(file);
+			snapshots.set(file, snapshot);
+		}
+		const publicFiles = registerSnapshots({
+			grant,
+			files: availableFiles,
+			snapshotFor: (file) => snapshots.get(file),
+		});
+		Object.defineProperty(publicFiles, "sourceIndexes", {
+			value: Object.freeze(sourceIndexes),
+		});
+		return publicFiles;
+	}
+
 	function registerScan({ grant, canonicalGrantPath, files }) {
 		const seen = new Set();
 		const issuedAt = now();
@@ -149,7 +237,7 @@ function createOpaqueFileRegistry({
 		return publicFiles;
 	}
 
-	return { registerScan };
+	return { registerIndexedResults, registerScan };
 }
 
 module.exports = {

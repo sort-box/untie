@@ -162,7 +162,13 @@ describe("capability registry", () => {
 		const pending = registry.invoke(undefined, {
 			requestId: "2",
 			capability: "queryIndex",
-			input: { query: "lease" },
+			input: {
+				grantId: "grant_test",
+				interpretedQuery: {
+					searchTerms: ["lease"],
+					filters: { extensions: [], namePatterns: [], modifiedAt: null },
+				},
+			},
 		});
 
 		await Promise.resolve();
