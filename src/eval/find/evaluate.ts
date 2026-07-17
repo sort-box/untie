@@ -6,6 +6,7 @@ import type {
 	FindEvaluationReport,
 	FindLabeledQuery,
 	FindQueryKind,
+	FindQueryOutcome,
 	LatencyMetrics,
 } from "./types.ts";
 
@@ -28,6 +29,25 @@ interface QueryResult {
 	query: FindLabeledQuery;
 	ids: string[];
 	latencies: number[];
+}
+
+function queryOutcome({ query, ids }: QueryResult): FindQueryOutcome {
+	const firstRelevantIndex = ids.findIndex((id) =>
+		query.relevantIds.includes(id),
+	);
+	const firstRelevantRank =
+		firstRelevantIndex < 0 ? null : firstRelevantIndex + 1;
+	return {
+		queryId: query.id,
+		kind: query.kind,
+		query: query.query,
+		relevantIds: [...query.relevantIds],
+		resultIds: [...ids],
+		firstRelevantRank,
+		hitTop1: firstRelevantRank === 1,
+		hitTop3: firstRelevantRank !== null && firstRelevantRank <= 3,
+		candidates: ids.length,
+	};
 }
 
 function percentile(sorted: number[], fraction: number): number {
@@ -153,6 +173,7 @@ export function evaluateFindCorpus(
 					noMatchResults.flatMap((result) => result.latencies),
 				),
 			},
+			queryOutcomes: results.map(queryOutcome),
 		};
 	} finally {
 		database.close();
