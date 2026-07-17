@@ -220,17 +220,38 @@ describe("mock sort driver", () => {
 		).toBeGreaterThan(5);
 	});
 
-	it("applies an approved plan into progress → result with matching counts", () => {
+	it("applies an approved plan one operation at a time, ending in a result", () => {
 		const plan = planStepOf(buildSortPlanSteps({ assistantId: "a", now: 0 }));
 		const steps = buildApplySteps({
 			applyId: "apply-1",
 			now: 0,
 			folders: plan.folders,
 		});
-		expect(kindsOf(steps)).toEqual(["progress", "result"]);
+
+		// Per-operation determinate progress, then a single terminal result.
+		const kinds = kindsOf(steps);
+		expect(new Set(kinds)).toEqual(new Set(["progress", "result"]));
+		expect(kinds.at(-1)).toBe("result");
+		expect(kinds.slice(0, -1).every((kind) => kind === "progress")).toBe(true);
+
+		// One progress step per completed operation: the completed count advances
+		// 0, 1, 2, … and is derived from the journal (never exceeds the total).
+		const total = planMoveCount(plan.folders);
+		const progressCurrents = steps
+			.map((step) => step.message)
+			.filter((message) => message.kind === "progress")
+			.map((message) => message.current);
+		expect(progressCurrents).toEqual(
+			Array.from({ length: total }, (_, index) => index),
+		);
+		expect(kinds.filter((kind) => kind === "progress")).toHaveLength(total);
+
+		// Every step shares the evolving apply id, and the counts on the terminal
+		// result derive from the plan's own move set.
+		expect(steps.every((step) => step.message.id === "apply-1")).toBe(true);
 		const result = steps.at(-1)?.message;
 		if (result?.kind !== "result") throw new Error("expected a result");
-		expect(result.movedCount).toBe(planMoveCount(plan.folders));
+		expect(result.movedCount).toBe(total);
 		expect(result.createdFolderCount).toBe(
 			planCreatedFolderCount(plan.folders),
 		);

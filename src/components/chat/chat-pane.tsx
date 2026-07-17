@@ -2,6 +2,7 @@ import { SendIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "#/components/ui/button";
+import { findInFlightApply } from "./apply-progress-model";
 import {
 	type ApprovalOrchestration,
 	useApprovalOrchestration,
@@ -24,6 +25,7 @@ import {
 	buildStalePlan,
 	buildUndoMessage,
 	type DriverHandle,
+	resumeApplySteps,
 	runDriverSteps,
 } from "./mock-sort-driver";
 import { RiskAcknowledgment } from "./risk-acknowledgment";
@@ -137,6 +139,27 @@ export function ChatPane({
 			onDone?.();
 		});
 	};
+
+	// S7 durability: resume an apply that was in flight when the transcript was
+	// last persisted. A mid-apply reload re-seeds the pane from the journal-state
+	// progress message (which already shows the correct completed/total); here we
+	// recover that journal state and drive its REMAINING operations to completion,
+	// so progress continues from where the journal left off rather than resetting,
+	// stalling, or vanishing. Runs once per mount — a fresh apply flows through the
+	// approval orchestration instead, and a finished apply leaves a `result` (no
+	// in-flight journal) so nothing resumes.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only recovery from the seeded transcript.
+	useEffect(() => {
+		const inFlight = findInFlightApply(initialMessages);
+		if (!inFlight) return;
+		runSteps(
+			resumeApplySteps({
+				applyId: inFlight.id,
+				now: inFlight.createdAt,
+				state: inFlight.apply,
+			}),
+		);
+	}, []);
 
 	// Full approval orchestration (S6). The plan card hands off a single trimmed
 	// snapshot; this owns everything behind the approve action — the risk
