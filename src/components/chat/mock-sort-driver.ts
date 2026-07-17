@@ -31,11 +31,19 @@ import {
 	type PlanMessage,
 	planCreatedFolderCount,
 	planMoveCount,
+	type UndoMessage,
 } from "./message-model";
 import type {
 	SortDisclosureItem,
 	SortDisclosureRequest,
 } from "./sort-disclosure-model";
+import {
+	buildUndoResult,
+	type UndoBatchOutcome,
+	type UndoEngineFileResult,
+	type UndoEngineFolderResult,
+	type UndoEngineResult,
+} from "./undo-outcome-model";
 
 /** One scripted transition: apply `message` after waiting `delayMs`. */
 export interface DriverStep {
@@ -542,25 +550,157 @@ export function buildSortFailure(input: {
 	];
 }
 
+// ── Undo mock ────────────────────────────────────────────────────────────────
+// The journaled undo engine (electron/journaled-apply.cjs) already returns the
+// authoritative outcome; the renderer just presents it. Until that IPC is wired
+// (W14), this stands in for it by shaping the SAME engine result — opaque ids,
+// batch verdict, per-file/per-folder outcomes — from a plan's folders. Because
+// it goes through `buildUndoResult` (the id → display-name seam), the real undo
+// result can drop straight in without touching the presentation model.
+
+/** A representative per-file situation for a partial undo (covers every reason). */
+const PARTIAL_FILE_SITUATIONS: readonly {
+	outcome: UndoEngineFileResult["outcome"];
+	reason?: UndoEngineFileResult["reason"];
+}[] = [
+	{ outcome: "conflict", reason: "origin_occupied" },
+	{ outcome: "restored_modified", reason: "modified_since_move" },
+	{ outcome: "conflict", reason: "destination_replaced" },
+	{ outcome: "already_moved_away", reason: "source_missing" },
+	{ outcome: "conflict", reason: "destination_changed" },
+	{ outcome: "conflict", reason: "filesystem_error" },
+];
+
+/** A representative folder situation for a partial undo (covers every outcome). */
+const PARTIAL_NEW_FOLDER_OUTCOMES: readonly UndoEngineFolderResult["outcome"][] =
+	["removed", "non_empty", "unavailable"];
+
+/** Opaque, path-free ids for one move / one folder — mirroring the engine's ids. */
+const moveItemId = (folderIndex: number, fileIndex: number) =>
+	`move_${folderIndex}_${fileIndex}`;
+const folderItemId = (folderIndex: number) => `folder_${folderIndex}`;
+
 /**
- * Undo simulation: a single `undo` message restoring the given result. Undo has
- * no intermediate states here — the real journal replay lands in the sort
- * pipeline work.
+ * Shape an engine-style undo result from a plan's folders, plus the id → display
+ * name maps to resolve it. `complete` restores every move and removes the empty
+ * folders Untie created; `partial` leaves a representative spread of conflicts in
+ * place (one of every reason); `unavailable` is the grant-gone case the engine
+ * reports with no per-item results at all.
+ */
+function mockUndoEngine(
+	folders: readonly PlanFolder[],
+	outcome: UndoBatchOutcome,
+): {
+	engine: UndoEngineResult;
+	fileNames: Map<string, string>;
+	folderNames: Map<string, string>;
+} {
+	const fileNames = new Map<string, string>();
+	const folderNames = new Map<string, string>();
+	const files: UndoEngineFileResult[] = [];
+	const folderResults: UndoEngineFolderResult[] = [];
+
+	// The grant is gone: the engine authorises nothing, so there are no per-item
+	// results — the sort is untouched and every file stays where it is.
+	if (outcome === "unavailable") {
+		return {
+			engine: {
+				batchId: "batch_mock_unavailable",
+				state: "needs_attention",
+				outcome: "unavailable",
+				files: [],
+				folders: [],
+			},
+			fileNames,
+			folderNames,
+		};
+	}
+
+	let leftCount = 0;
+	let newFolderCount = 0;
+	folders.forEach((folder, folderIndex) => {
+		folder.files.forEach((file, fileIndex) => {
+			const itemId = moveItemId(folderIndex, fileIndex);
+			fileNames.set(itemId, file);
+			if (outcome === "partial") {
+				// Reverse order so the first move a user sees is the last one applied,
+				// then hand the leading moves a representative conflict each.
+				const situation = PARTIAL_FILE_SITUATIONS[leftCount];
+				if (situation) {
+					leftCount += 1;
+					files.push({
+						itemId,
+						outcome: situation.outcome,
+						...(situation.reason ? { reason: situation.reason } : {}),
+					});
+					return;
+				}
+			}
+			files.push({ itemId, outcome: "restored" });
+		});
+
+		const folderId = folderItemId(folderIndex);
+		folderNames.set(folderId, folder.name);
+		if (!folder.isNew) {
+			folderResults.push({ folderId, outcome: "pre_existing" });
+		} else if (outcome === "partial") {
+			const folderOutcome =
+				PARTIAL_NEW_FOLDER_OUTCOMES[
+					newFolderCount % PARTIAL_NEW_FOLDER_OUTCOMES.length
+				];
+			newFolderCount += 1;
+			folderResults.push({ folderId, outcome: folderOutcome });
+		} else {
+			folderResults.push({ folderId, outcome: "removed" });
+		}
+	});
+
+	const partial = files.some((file) => file.outcome === "conflict");
+	return {
+		engine: {
+			batchId: `batch_mock_${outcome}`,
+			state: partial ? "needs_attention" : "rolled_back",
+			outcome,
+			files,
+			folders: folderResults,
+		},
+		fileNames,
+		folderNames,
+	};
+}
+
+/**
+ * Undo simulation: a single `undo` message carrying the engine's outcome for the
+ * given plan. `outcome` selects COMPLETE / PARTIAL / UNAVAILABLE so every card
+ * state can be exercised without the real IPC. `resultId` links it to the sort
+ * it reverses so the pane can refuse a duplicate undo. Undo has no intermediate
+ * states here — the real journal replay lands in the sort pipeline work.
  */
 export function buildUndoMessage(input: {
 	id: string;
 	now: number;
-	restoredCount: number;
-	removedFolderCount: number;
-}): ChatMessage {
-	const { id, now, restoredCount, removedFolderCount } = input;
+	outcome?: UndoBatchOutcome;
+	folders?: readonly PlanFolder[];
+	resultId?: string;
+}): UndoMessage {
+	const {
+		id,
+		now,
+		outcome = "complete",
+		folders = MOCK_PLAN_FOLDERS,
+		resultId,
+	} = input;
+	const { engine, fileNames, folderNames } = mockUndoEngine(folders, outcome);
+	const result = buildUndoResult(engine, {
+		fileName: (itemId) => fileNames.get(itemId) ?? itemId,
+		folderName: (folderId) => folderNames.get(folderId) ?? folderId,
+	});
 	return {
 		kind: "undo",
 		id,
 		createdAt: now,
-		summary: `Restored ${restoredCount} files to their original locations. Empty folders Untie created were removed.`,
-		restoredCount,
-		removedFolderCount,
+		...result,
+		...(resultId ? { resultId } : {}),
 	};
 }
 

@@ -14,6 +14,7 @@ import {
 	type ChatMessage,
 	createMessageId,
 	type PlanMessage,
+	type ResultMessage,
 	upsertMessage,
 } from "./message-model";
 import {
@@ -111,6 +112,21 @@ export function ChatPane({
 		() => [...messages].reverse().find((message) => message.kind === "result"),
 		[messages],
 	);
+
+	// The result ids that have already been undone, derived from the transcript's
+	// undo messages (each carries the `resultId` it reversed). Deriving it — rather
+	// than tracking separate state — keeps a result's undo control disabled after
+	// use, refuses a second undo, and survives a persisted-transcript reload, since
+	// the engine only ever reverses an `applied` batch once.
+	const undoneResultIds = useMemo(() => {
+		const ids = new Set<string>();
+		for (const message of messages) {
+			if (message.kind === "undo" && message.resultId) {
+				ids.add(message.resultId);
+			}
+		}
+		return ids;
+	}, [messages]);
 
 	// The most recent plan card still awaiting approval — drives the dev-only
 	// "mark stale" affordance (mirroring W11 invalidating a prepared snapshot).
@@ -265,16 +281,25 @@ export function ChatPane({
 		apply(buildInvalidPlan({ id: createMessageId(), now: Date.now() }));
 	};
 
-	const simulateUndo = () => {
-		if (isBusy || !lastResult) return;
+	// Undo a completed sort: build and apply the honest undo outcome for that
+	// result, linked to it by `resultId` so its card marks the sort undone and
+	// refuses a second undo. Standing in for the journaled undo IPC (W14), which
+	// returns the same engine-shaped outcome this feeds through the model.
+	const undoResult = (result: ResultMessage) => {
+		// Refuse a duplicate undo — the engine only reverses an `applied` batch once.
+		if (undoneResultIds.has(result.id)) return;
 		apply(
 			buildUndoMessage({
 				id: createMessageId(),
 				now: Date.now(),
-				restoredCount: lastResult.movedCount,
-				removedFolderCount: lastResult.createdFolderCount,
+				resultId: result.id,
 			}),
 		);
+	};
+
+	const simulateUndo = () => {
+		if (isBusy || !lastResult) return;
+		undoResult(lastResult);
 	};
 
 	const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -311,6 +336,11 @@ export function ChatPane({
 									<MessageCard
 										message={message}
 										onApprovePlan={approval.approve}
+										onUndo={undoResult}
+										undone={
+											message.kind === "result" &&
+											undoneResultIds.has(message.id)
+										}
 									/>
 								</li>
 							))}
@@ -372,7 +402,9 @@ export function ChatPane({
 
 			<DevToolbar
 				isRunning={isBusy}
-				canUndo={Boolean(lastResult)}
+				canUndo={
+					Boolean(lastResult) && !undoneResultIds.has(lastResult?.id ?? "")
+				}
 				canMarkStale={Boolean(latestReadyPlan)}
 				onSort={() => startSort(DEFAULT_REQUEST)}
 				onMarkStale={markPlanStale}
