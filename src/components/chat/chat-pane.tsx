@@ -2,6 +2,10 @@ import { SendIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "#/components/ui/button";
+import {
+	type ApprovalOrchestration,
+	useApprovalOrchestration,
+} from "./approval-orchestration";
 import { saveChatSession } from "./chat-persistence";
 import { deriveChatTitle } from "./chat-title";
 import { MessageCard } from "./message-card";
@@ -22,6 +26,7 @@ import {
 	type DriverHandle,
 	runDriverSteps,
 } from "./mock-sort-driver";
+import { RiskAcknowledgment } from "./risk-acknowledgment";
 import { SortDisclosure } from "./sort-disclosure";
 import type {
 	GenerateSortPlanInput,
@@ -100,12 +105,6 @@ export function ChatPane({
 		};
 	}, [messages, session.id, session.createdAt]);
 
-	// Keep the newest message (or the pending disclosure gate) in view.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript/gate change.
-	useEffect(() => {
-		listEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-	}, [messages, pendingDisclosure]);
-
 	const lastResult = useMemo(
 		() => [...messages].reverse().find((message) => message.kind === "result"),
 		[messages],
@@ -124,17 +123,55 @@ export function ChatPane({
 		[messages],
 	);
 
-	// Nothing may be sent or simulated while the disclosure gate is open.
-	const isBusy = isRunning || pendingDisclosure !== null;
-
 	const apply = (message: ChatMessage) =>
 		setMessages((prev) => upsertMessage(prev, message));
 
-	const runSteps = (steps: Parameters<typeof runDriverSteps>[0]) => {
+	const runSteps = (
+		steps: Parameters<typeof runDriverSteps>[0],
+		onDone?: () => void,
+	) => {
 		driverRef.current?.cancel();
 		setIsRunning(true);
-		driverRef.current = runDriverSteps(steps, apply, () => setIsRunning(false));
+		driverRef.current = runDriverSteps(steps, apply, () => {
+			setIsRunning(false);
+			onDone?.();
+		});
 	};
+
+	// Full approval orchestration (S6). The plan card hands off a single trimmed
+	// snapshot; this owns everything behind the approve action — the risk
+	// acknowledgment gate, non-ready refusal, double-submit prevention, and
+	// stale-version rejection — as a pure, unit-tested state machine. `onSubmit`
+	// is the only side effect: it locks the reviewed plan to `approved`
+	// (preventing a second approval) and runs the mock apply, standing in for the
+	// journaled apply IPC (W14) that is not yet wired to the renderer.
+	const approvalRef = useRef<ApprovalOrchestration | null>(null);
+	const approval = useApprovalOrchestration({
+		messages,
+		onSubmit: (snapshot) => {
+			apply({ ...snapshot, status: "approved" });
+			runSteps(
+				buildApplySteps({
+					applyId: createMessageId(),
+					now: Date.now(),
+					folders: snapshot.folders,
+				}),
+				() => approvalRef.current?.settle(),
+			);
+		},
+	});
+	approvalRef.current = approval;
+
+	// Nothing may be sent or simulated while the disclosure gate is open or while
+	// an approval is mid-flight (awaiting the risk acknowledgment, or submitting).
+	const isBusy =
+		isRunning || pendingDisclosure !== null || approval.phase !== "idle";
+
+	// Keep the newest message (or the disclosure / acknowledgment gate) in view.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on transcript/gate change.
+	useEffect(() => {
+		listEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+	}, [messages, pendingDisclosure, approval.phase]);
 
 	const startSort = (request: string) => {
 		const text = request.trim();
@@ -166,22 +203,6 @@ export function ChatPane({
 	// Cancel: close the gate. Nothing was transmitted.
 	const cancelDisclosure = () => {
 		setPendingDisclosure(null);
-	};
-
-	// Approve a reviewed plan. Only a `ready` plan can be approved; the plan card
-	// disables the control otherwise, and this guard is the defence in depth. The
-	// card is locked to `approved` first (preventing a double-submit) and then the
-	// apply simulation runs, standing in for the journaled apply engine (W14).
-	const approvePlan = (plan: PlanMessage) => {
-		if (isBusy || plan.status !== "ready") return;
-		apply({ ...plan, status: "approved" });
-		runSteps(
-			buildApplySteps({
-				applyId: createMessageId(),
-				now: Date.now(),
-				folders: plan.folders,
-			}),
-		);
 	};
 
 	const simulateFailure = () => {
@@ -264,7 +285,10 @@ export function ChatPane({
 						>
 							{messages.map((message) => (
 								<li key={message.id}>
-									<MessageCard message={message} onApprovePlan={approvePlan} />
+									<MessageCard
+										message={message}
+										onApprovePlan={approval.approve}
+									/>
 								</li>
 							))}
 						</ol>
@@ -275,6 +299,16 @@ export function ChatPane({
 								request={pendingDisclosure}
 								onConfirm={confirmDisclosure}
 								onCancel={cancelDisclosure}
+							/>
+						</div>
+					) : null}
+					{approval.phase === "confirming-acknowledgment" &&
+					approval.pending ? (
+						<div className="mt-4">
+							<RiskAcknowledgment
+								snapshot={approval.pending.snapshot}
+								onConfirm={approval.confirmAcknowledgment}
+								onCancel={approval.cancelAcknowledgment}
 							/>
 						</div>
 					) : null}

@@ -30,8 +30,22 @@ const sendThroughDisclosure = async () => {
 	fireEvent.click(await screen.findByRole("button", { name: /send to ai/i }));
 };
 
-describe("ChatPane approval flow (W13)", () => {
-	it("stops at a ready plan, then applies it to a result on approve", async () => {
+/** The risk acknowledgment gate's confirm control (S6). */
+const acknowledgeButton = () =>
+	screen.findByRole(
+		"button",
+		{ name: /acknowledge & sort/i },
+		{ timeout: 6000 },
+	) as Promise<HTMLButtonElement>;
+
+/** Tick the explicit acknowledgment so the gate's confirm becomes available. */
+const ackCheckbox = () =>
+	screen.getByRole("checkbox", {
+		name: /reviewed the flagged moves/i,
+	}) as HTMLInputElement;
+
+describe("ChatPane approval flow (W13 + S6)", () => {
+	it("gates a flagged plan behind acknowledgment, then applies it on confirm", async () => {
 		render(<ChatPane session={session} initialMessages={[]} />);
 		await sendThroughDisclosure();
 
@@ -40,11 +54,39 @@ describe("ChatPane approval flow (W13)", () => {
 		expect(approve.disabled).toBe(false);
 		expect(screen.queryByText("Sort complete")).toBeNull();
 
+		// The mock plan carries low-confidence moves, so approving enters the S6
+		// risk acknowledgment gate rather than applying immediately.
 		fireEvent.click(approve);
+		const acknowledge = await acknowledgeButton();
+		expect(acknowledge.disabled).toBe(true);
+		expect(screen.queryByText("Sort complete")).toBeNull();
 
-		// Approving locks the card and lands a result summary in the transcript.
+		// The acknowledgment must be explicit; ticking it enables the confirm.
+		fireEvent.click(ackCheckbox());
+		expect(acknowledge.disabled).toBe(false);
+		fireEvent.click(acknowledge);
+
+		// Confirming locks the card and lands a result summary in the transcript.
 		await screen.findByText("Sort complete", {}, { timeout: 6000 });
 		expect(screen.getByRole("button", { name: /^Approved$/ })).toBeTruthy();
+	}, 15000);
+
+	it("applies nothing while the acknowledgment gate is open and on cancel", async () => {
+		render(<ChatPane session={session} initialMessages={[]} />);
+		await sendThroughDisclosure();
+
+		fireEvent.click(await approveButton());
+		await acknowledgeButton();
+
+		// Going back dismisses the gate; nothing was applied.
+		fireEvent.click(screen.getByRole("button", { name: /go back/i }));
+		expect(
+			screen.queryByRole("button", { name: /acknowledge & sort/i }),
+		).toBeNull();
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		expect(screen.queryByText("Sort complete")).toBeNull();
+		// The plan is still reviewable — approval can be attempted again.
+		expect((await approveButton()).disabled).toBe(false);
 	}, 15000);
 
 	it("blocks approval when the pending plan is marked stale", async () => {
