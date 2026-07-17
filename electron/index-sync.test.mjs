@@ -72,14 +72,17 @@ describe("grant-scoped index synchronization", () => {
 		const { granted, index, engine } = setup();
 		fs.writeFileSync(path.join(granted, "report.txt"), "hello");
 
-		expect(engine.getStatus("grant_test")).toEqual({
+		expect(engine.getStatus("grant_test")).toMatchObject({
 			state: "idle",
+			readiness: "partial",
+			partial: true,
 			lastSyncedAt: null,
 			counts: { indexed: 0, added: 0, updated: 0, removed: 0 },
 		});
 		const result = await engine.syncGrant("grant_test");
 
 		expect(result.state).toBe("idle");
+		expect(result).toMatchObject({ readiness: "complete", partial: false });
 		expect(result.lastSyncedAt).toEqual(expect.any(Number));
 		expect(result.counts).toEqual({
 			indexed: 1,
@@ -93,6 +96,49 @@ describe("grant-scoped index synchronization", () => {
 		expect(
 			index.database.prepare("SELECT filename, content FROM file_search").all(),
 		).toEqual([{ filename: "report.txt", content: "hello" }]);
+		index.database.close();
+	});
+
+	test("emits progress, transitions partial to complete, and surfaces errors", async () => {
+		const updates = [];
+		const { granted, index, engine } = setup({
+			extractor: async (filePath) => {
+				if (filePath.endsWith("broken.txt")) throw new Error("fixture failure");
+				return { status: "extracted", text: "ok" };
+			},
+		});
+		const unsubscribe = engine.subscribe((update) => updates.push(update));
+		fs.writeFileSync(path.join(granted, "one.txt"), "one");
+		await engine.syncGrant("grant_test");
+
+		expect(updates.some(({ status }) => status.readiness === "partial")).toBe(
+			true,
+		);
+		expect(
+			updates.some(
+				({ status }) =>
+					status.progress.phase === "processing" &&
+					status.progress.processed === 1 &&
+					status.progress.total === 1,
+			),
+		).toBe(true);
+		expect(updates.at(-1).status).toMatchObject({
+			readiness: "complete",
+			partial: false,
+			progress: { phase: "complete", processed: 1, total: 1 },
+		});
+
+		fs.writeFileSync(path.join(granted, "broken.txt"), "broken");
+		await expect(engine.syncGrant("grant_test")).rejects.toThrow(
+			"fixture failure",
+		);
+		expect(engine.getStatus("grant_test")).toMatchObject({
+			readiness: "error",
+			partial: false,
+			progress: { phase: "error" },
+			error: { code: "INDEX_SYNC_FAILED", message: "Index sync failed" },
+		});
+		unsubscribe();
 		index.database.close();
 	});
 

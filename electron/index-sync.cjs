@@ -31,13 +31,29 @@ function createIndexSynchronizationEngine({
 	const statuses = new Map();
 	const running = new Set();
 	const staleRevisions = new Map();
+	const listeners = new Set();
+
+	function publish(grantId) {
+		const snapshot = getStatus(grantId);
+		for (const listener of listeners) listener({ grantId, status: snapshot });
+		return snapshot;
+	}
+
+	function setStatus(grantId, status) {
+		statuses.set(grantId, status);
+		return publish(grantId);
+	}
 
 	function statusFor(grantId) {
 		return (
 			statuses.get(grantId) || {
 				state: "idle",
+				readiness: "partial",
+				partial: true,
 				lastSyncedAt: null,
 				counts: { indexed: 0, added: 0, updated: 0, removed: 0 },
+				progress: { phase: "pending", processed: 0, total: 0 },
+				error: null,
 			}
 		);
 	}
@@ -46,16 +62,29 @@ function createIndexSynchronizationEngine({
 		const status = statusFor(grantId);
 		return {
 			state: status.state,
+			readiness: status.readiness,
+			partial: status.partial,
 			lastSyncedAt: status.lastSyncedAt,
 			counts: { ...status.counts },
+			progress: { ...status.progress },
+			error: status.error ? { ...status.error } : null,
 		};
+	}
+
+	function subscribe(listener) {
+		listeners.add(listener);
+		return () => listeners.delete(listener);
 	}
 
 	function markStale(grantId) {
 		const previous = statusFor(grantId);
 		staleRevisions.set(grantId, (staleRevisions.get(grantId) || 0) + 1);
-		statuses.set(grantId, { ...previous, state: "stale" });
-		return getStatus(grantId);
+		return setStatus(grantId, {
+			...previous,
+			state: "stale",
+			readiness: "partial",
+			partial: true,
+		});
 	}
 
 	function removeGrant(grantId) {
@@ -87,12 +116,15 @@ function createIndexSynchronizationEngine({
 			}
 			database.exec("COMMIT");
 			const previous = statusFor(grantId);
-			statuses.set(grantId, {
+			return setStatus(grantId, {
 				state: "unavailable",
+				readiness: "error",
+				partial: false,
 				lastSyncedAt: previous.lastSyncedAt,
 				counts: { indexed: 0, added: 0, updated: 0, removed: rows.length },
+				progress: { phase: "error", processed: 0, total: 0 },
+				error: { code: "GRANT_UNAVAILABLE", message: "Folder unavailable" },
 			});
-			return getStatus(grantId);
 		} catch (error) {
 			try {
 				database.exec("ROLLBACK");
@@ -106,13 +138,25 @@ function createIndexSynchronizationEngine({
 		running.add(grantId);
 		const previous = statusFor(grantId);
 		const staleRevisionAtStart = staleRevisions.get(grantId) || 0;
-		statuses.set(grantId, { ...previous, state: "syncing" });
+		setStatus(grantId, {
+			...previous,
+			state: "syncing",
+			readiness: "partial",
+			partial: true,
+			progress: { phase: "scanning", processed: 0, total: 0 },
+			error: null,
+		});
 		try {
 			throwIfCancelled(signal);
 			const authorization = authorizer.resolveGrant(grantId);
 			const root = authorization.canonicalPath;
 			const scan = await scanner.scanFolder(root, { signal });
 			const records = [];
+			const total = scan.files.length;
+			setStatus(grantId, {
+				...statusFor(grantId),
+				progress: { phase: "processing", processed: 0, total },
+			});
 			for (const file of scan.files) {
 				throwIfCancelled(signal);
 				const currentPath = path.join(root, file.name);
@@ -134,9 +178,21 @@ function createIndexSynchronizationEngine({
 					modifiedAtMs: Math.trunc(stat.mtimeMs),
 					content: extraction.status === "extracted" ? extraction.text : "",
 				});
+				setStatus(grantId, {
+					...statusFor(grantId),
+					progress: {
+						phase: "processing",
+						processed: records.length,
+						total,
+					},
+				});
 			}
 
 			throwIfCancelled(signal);
+			setStatus(grantId, {
+				...statusFor(grantId),
+				progress: { phase: "committing", processed: total, total },
+			});
 			// A scan can outlive its grant. Reauthorize immediately before the
 			// synchronous transaction so revocation cannot repopulate cleared rows.
 			authorizer.resolveGrant(grantId);
@@ -294,17 +350,27 @@ function createIndexSynchronizationEngine({
 				(staleRevisions.get(grantId) || 0) !== staleRevisionAtStart;
 			const result = {
 				state: becameStaleDuringSync ? "stale" : "idle",
+				readiness: becameStaleDuringSync ? "partial" : "complete",
+				partial: becameStaleDuringSync,
 				lastSyncedAt: now(),
 				counts,
+				progress: { phase: "complete", processed: total, total },
+				error: null,
 			};
-			statuses.set(grantId, result);
-			return getStatus(grantId);
+			return setStatus(grantId, result);
 		} catch (error) {
 			const becameStaleDuringSync =
 				(staleRevisions.get(grantId) || 0) !== staleRevisionAtStart;
-			statuses.set(grantId, {
+			setStatus(grantId, {
 				...previous,
 				state: becameStaleDuringSync ? "stale" : previous.state,
+				readiness: "error",
+				partial: false,
+				progress: {
+					...statusFor(grantId).progress,
+					phase: "error",
+				},
+				error: { code: "INDEX_SYNC_FAILED", message: "Index sync failed" },
 			});
 			throw error;
 		} finally {
@@ -312,7 +378,7 @@ function createIndexSynchronizationEngine({
 		}
 	}
 
-	return { getStatus, markStale, removeGrant, syncGrant };
+	return { getStatus, markStale, removeGrant, subscribe, syncGrant };
 }
 
 module.exports = { createIndexSynchronizationEngine, identityKey };

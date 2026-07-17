@@ -105,6 +105,31 @@ describe("capability registry", () => {
 		).resolves.toEqual({ ok: true, value: { message: "hello" } });
 	});
 
+	it("validates the queryable per-grant index freshness contract", async () => {
+		const registry = createCapabilityRegistry({
+			getIndexStatus: async () => ({
+				state: "syncing",
+				readiness: "partial",
+				partial: true,
+				lastSyncedAt: null,
+				counts: { indexed: 0, added: 0, updated: 0, removed: 0 },
+				progress: { phase: "processing", processed: 2, total: 5 },
+				error: null,
+			}),
+		});
+
+		await expect(
+			registry.invoke(undefined, {
+				requestId: "index-status",
+				capability: "getIndexStatus",
+				input: { grantId: "grant-1" },
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: { readiness: "partial", partial: true },
+		});
+	});
+
 	it("rejects unknown names with a structured error", async () => {
 		const registry = createCapabilityRegistry();
 		const result = await registry.invoke(undefined, {

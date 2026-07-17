@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const { capabilityNames } = require("./capabilities/contracts.cjs");
 const {
 	CANCEL_CHANNEL,
+	INDEX_STATUS_CHANNEL,
 	INVOKE_CHANNEL,
 } = require("./capabilities/registry.cjs");
 
@@ -29,6 +30,13 @@ const capabilities = Object.fromEntries(
 		(input, options) => invoke(name, input, options),
 	]),
 );
+
+capabilities.subscribeIndexStatus = (listener) => {
+	if (typeof listener !== "function") return () => {};
+	const receive = (_event, update) => listener(update);
+	ipcRenderer.on(INDEX_STATUS_CHANNEL, receive);
+	return () => ipcRenderer.removeListener(INDEX_STATUS_CHANNEL, receive);
+};
 
 contextBridge.exposeInMainWorld("untie", Object.freeze(capabilities));
 contextBridge.exposeInMainWorld(
