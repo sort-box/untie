@@ -5,7 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 describe("sandboxed preload bridge", () => {
 	it("exposes only opaque-ID capabilities and no raw filesystem primitive", () => {
 		let exposed: Record<string, unknown> | undefined;
-		const ipcRenderer = { invoke: vi.fn(), send: vi.fn() };
+		const ipcRenderer = {
+			invoke: vi.fn(),
+			send: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
 		const context = {
 			AbortController,
 			Object,
@@ -40,6 +45,7 @@ describe("sandboxed preload bridge", () => {
 				"deleteAllChatData",
 				"deleteChatSession",
 				"getStartupStatus",
+				"getIndexStatus",
 				"listChatSessions",
 				"listFolderGrants",
 				"loadChatSession",
@@ -52,6 +58,7 @@ describe("sandboxed preload bridge", () => {
 				"saveChatSession",
 				"scanFolder",
 				"selectFolder",
+				"subscribeIndexStatus",
 				"undo",
 			].sort(),
 		);
@@ -85,6 +92,8 @@ describe("sandboxed preload bridge", () => {
 					}),
 			),
 			send: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
 		};
 		const context = {
 			AbortController,

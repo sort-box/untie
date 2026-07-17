@@ -325,6 +325,7 @@ function createCapabilityAuthorizer({ store, fsApi = fs, now = Date.now }) {
 		switch (capability) {
 			case "scanFolder":
 			case "classifyFolderRisk":
+			case "getIndexStatus":
 				return Object.freeze({ grant: resolveGrant(input.grantId) });
 			case "preparePlan":
 				return Object.freeze({

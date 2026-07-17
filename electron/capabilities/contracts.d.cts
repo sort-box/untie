@@ -58,6 +58,42 @@ export type ScanFolderResult = {
 	readonly candidateDestinations: ScanNamedEntry[];
 	readonly skipped: ScanSkippedEntry[];
 };
+export type IndexOperationalState =
+	| "idle"
+	| "syncing"
+	| "stale"
+	| "unavailable";
+export type IndexReadiness = "partial" | "complete" | "error";
+export type IndexProgressPhase =
+	| "pending"
+	| "scanning"
+	| "processing"
+	| "committing"
+	| "complete"
+	| "error";
+export type IndexStatus = {
+	readonly state: IndexOperationalState;
+	readonly readiness: IndexReadiness;
+	/** Explicit UI marker: label find/chat answers while true. */
+	readonly partial: boolean;
+	readonly lastSyncedAt: number | null;
+	readonly counts: {
+		readonly indexed: number;
+		readonly added: number;
+		readonly updated: number;
+		readonly removed: number;
+	};
+	readonly progress: {
+		readonly phase: IndexProgressPhase;
+		readonly processed: number;
+		readonly total: number;
+	};
+	readonly error: { readonly code: string; readonly message: string } | null;
+};
+export type IndexStatusEvent = {
+	readonly grantId: string;
+	readonly status: IndexStatus;
+};
 export type SortRiskCode =
 	| "FILE_COUNT_TOO_LARGE"
 	| "TOTAL_SIZE_TOO_LARGE"
@@ -152,6 +188,10 @@ export interface CapabilityMap {
 		request: OpaqueIdRequest<"grantId">;
 		response: ScanFolderResult;
 	};
+	getIndexStatus: {
+		request: OpaqueIdRequest<"grantId">;
+		response: IndexStatus;
+	};
 	classifyFolderRisk: {
 		request: OpaqueIdRequest<"grantId">;
 		response: SortRiskClassification;
@@ -212,6 +252,8 @@ export type CapabilityClient = {
 		input: CapabilityMap[K]["request"],
 		options?: InvokeOptions,
 	) => Promise<CapabilityResult<CapabilityMap[K]["response"]>>;
+} & {
+	subscribeIndexStatus(listener: (event: IndexStatusEvent) => void): () => void;
 };
 
 export const capabilityNames: readonly CapabilityName[];

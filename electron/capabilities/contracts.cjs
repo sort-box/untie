@@ -6,6 +6,7 @@ const capabilityNames = Object.freeze([
 	"listFolderGrants",
 	"revokeFolderGrant",
 	"scanFolder",
+	"getIndexStatus",
 	"classifyFolderRisk",
 	"acknowledgeFolderRisk",
 	"queryIndex",
@@ -141,6 +142,48 @@ const riskEntries = (value) =>
 				reason: nonEmptyString,
 			})(entry).ok,
 	);
+const indexStatus = (value) => {
+	const checked = exactResponse({
+		state: (state) =>
+			["idle", "syncing", "stale", "unavailable"].includes(state),
+		readiness: (readiness) =>
+			["partial", "complete", "error"].includes(readiness),
+		partial: boolean,
+		lastSyncedAt: (timestampValue) =>
+			timestampValue === null || timestamp(timestampValue),
+		counts: (counts) =>
+			exactResponse({
+				indexed: timestamp,
+				added: timestamp,
+				updated: timestamp,
+				removed: timestamp,
+			})(counts).ok,
+		progress: (progress) =>
+			exactResponse({
+				phase: (phase) =>
+					[
+						"pending",
+						"scanning",
+						"processing",
+						"committing",
+						"complete",
+						"error",
+					].includes(phase),
+				processed: timestamp,
+				total: timestamp,
+			})(progress).ok,
+		error: (error) =>
+			error === null ||
+			exactResponse({ code: nonEmptyString, message: nonEmptyString })(error)
+				.ok,
+	})(value);
+	if (!checked.ok) return checked;
+	if (value.partial !== (value.readiness === "partial"))
+		return validationError("response.partial must match readiness");
+	if (value.progress.processed > value.progress.total)
+		return validationError("response progress exceeds total");
+	return valid(value);
+};
 
 // Chat persistence (P2). A session id is a path-free opaque token; the pattern
 // mirrors CHAT_SESSION_ID_PATTERN in chat-store.cjs (kept independent so this
@@ -307,6 +350,10 @@ const contracts = Object.freeze({
 			candidateDestinations: scanNamedEntries,
 			skipped: scanSkippedEntries,
 		}),
+	},
+	getIndexStatus: {
+		request: opaqueIdRequest("grantId"),
+		response: indexStatus,
 	},
 	classifyFolderRisk: {
 		request: opaqueIdRequest("grantId"),

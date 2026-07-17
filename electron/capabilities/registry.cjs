@@ -7,6 +7,7 @@ const { RiskAcknowledgmentError } = require("../sort-risk.cjs");
 
 const INVOKE_CHANNEL = "untie:capability:invoke";
 const CANCEL_CHANNEL = "untie:capability:cancel";
+const INDEX_STATUS_CHANNEL = "untie:index-status";
 
 function failure(code, message, details) {
 	return {
@@ -109,6 +110,7 @@ function registerCapabilityHandlers(ipcMain, implementations, authorizer) {
 
 module.exports = {
 	CANCEL_CHANNEL,
+	INDEX_STATUS_CHANNEL,
 	INVOKE_CHANNEL,
 	createCapabilityRegistry,
 	registerCapabilityHandlers,

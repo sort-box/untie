@@ -12,7 +12,10 @@ const path = require("node:path");
 const { Readable } = require("node:stream");
 const { privacyLogger } = require("../privacy-log.cjs");
 const { pathToFileURL } = require("node:url");
-const { registerCapabilityHandlers } = require("./capabilities/registry.cjs");
+const {
+	INDEX_STATUS_CHANNEL,
+	registerCapabilityHandlers,
+} = require("./capabilities/registry.cjs");
 const {
 	CapabilityReferenceStore,
 	createCapabilityAuthorizer,
@@ -130,6 +133,7 @@ const capabilityImplementations = {
 			}),
 		};
 	},
+	getIndexStatus: async ({ grantId }) => indexSyncEngine.getStatus(grantId),
 	classifyFolderRisk: async ({ grantId }, { signal, authorization }) =>
 		sortRiskService.classify({
 			grantId,
@@ -281,6 +285,10 @@ app.whenReady().then(async () => {
 				scanner: folderScanner,
 				authorizer: capabilityAuthorizer,
 			});
+			indexSyncEngine.subscribe((update) => {
+				for (const window of BrowserWindow.getAllWindows())
+					window.webContents.send(INDEX_STATUS_CHANNEL, update);
+			});
 			filesystemWatcher = createFilesystemWatcher({
 				authorizer: capabilityAuthorizer,
 				indexSync: indexSyncEngine,
@@ -320,11 +328,11 @@ app.whenReady().then(async () => {
 		checkOnboarding: async () => "complete",
 	});
 	if (startupStatus.status !== "blocked") {
-		await Promise.allSettled(
-			restoredGrants
-				.filter((grant) => grant.state === "active")
-				.map((grant) => indexSyncEngine.syncGrant(grant.grantId)),
-		);
+		for (const grant of restoredGrants.filter(
+			(grant) => grant.state === "active",
+		)) {
+			void indexSyncEngine.syncGrant(grant.grantId).catch(() => {});
+		}
 	}
 	unregisterCapabilityHandlers = registerCapabilityHandlers(
 		ipcMain,
