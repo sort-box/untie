@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Default (non-sandbox) hardened-runtime entitlements for the notarized DMG.
+	  A notarized, non-App-Store app is NOT sandboxed: filesystem access is gated
+	  by macOS TCC (the "wants to access Desktop/Documents/Downloads" prompts),
+	  and once granted, access persists across relaunches keyed to the code
+	  signature — no security-scoped bookmark is required.
+
+	  The JIT / unsigned-memory / library-validation entitlements below are the
+	  minimum Electron (V8 + unsigned native modules such as better-sqlite3)
+	  needs to launch under Hardened Runtime.
+
+	  To validate the PRD's security-scoped-bookmark model instead, build with
+	  build/entitlements.mac.sandbox.plist — see docs/spikes/R1-signing-fs-access.md.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+</dict>
+</plist>
