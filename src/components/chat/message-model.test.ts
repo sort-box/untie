@@ -75,9 +75,12 @@ const SAMPLES: Record<MessageKind, ChatMessage> = {
 		kind: "undo",
 		id: "z",
 		createdAt: 0,
-		summary: "Restored 42 files.",
-		restoredCount: 42,
-		removedFolderCount: 4,
+		outcome: "complete",
+		files: [
+			{ itemId: "m0", name: "a.jpg", outcome: "restored" },
+			{ itemId: "m1", name: "lease.pdf", outcome: "restored" },
+		],
+		folders: [{ folderId: "f0", name: "Photos", outcome: "removed" }],
 	},
 	failed: {
 		kind: "failed",
@@ -280,17 +283,28 @@ describe("mock sort driver", () => {
 		expect(steps.every((s) => s.message.id === "a")).toBe(true);
 	});
 
-	it("builds an undo message that mirrors the sorted counts", () => {
+	it("builds an undo message carrying the engine outcome and per-item results", () => {
 		const undo = buildUndoMessage({
 			id: "z",
 			now: 0,
-			restoredCount: 42,
-			removedFolderCount: 4,
+			outcome: "complete",
+			folders: SAMPLE_FOLDERS,
+			resultId: "result-1",
 		});
 		expect(undo.kind).toBe("undo");
 		if (undo.kind !== "undo") throw new Error("expected undo");
-		expect(undo.restoredCount).toBe(42);
-		expect(undo.removedFolderCount).toBe(4);
+		expect(undo.outcome).toBe("complete");
+		// Links back to the sort it reverses so the pane can refuse a second undo.
+		expect(undo.resultId).toBe("result-1");
+		// Every move in the plan gets a per-file outcome; a complete undo restores all.
+		expect(undo.files).toHaveLength(planMoveCount(SAMPLE_FOLDERS));
+		expect(undo.files.every((file) => file.outcome === "restored")).toBe(true);
+		// The new folder is removed on undo; the pre-existing one is kept.
+		expect(undo.folders).toHaveLength(SAMPLE_FOLDERS.length);
+		expect(undo.folders.map((folder) => folder.outcome)).toContain("removed");
+		expect(undo.folders.map((folder) => folder.outcome)).toContain(
+			"pre_existing",
+		);
 	});
 
 	it("replays every step in order and reports completion", async () => {

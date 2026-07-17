@@ -10,7 +10,8 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageCard } from "./message-card";
-import type { PlanMessage } from "./message-model";
+import type { PlanFolder, PlanMessage, ResultMessage } from "./message-model";
+import { buildUndoMessage } from "./mock-sort-driver";
 
 /**
  * A compact ready plan. "Screenshots" has three files so exactly one filename
@@ -327,5 +328,139 @@ describe("PlanCard full review + exclusions (S4)", () => {
 			name: /include nda\.pdf/i,
 		}) as HTMLInputElement;
 		expect(checkbox.disabled).toBe(true);
+	});
+});
+
+const RESULT: ResultMessage = {
+	kind: "result",
+	id: "result-1",
+	createdAt: 0,
+	summary:
+		"Moved 4 files into 2 folders in Downloads. Nothing was renamed, overwritten, or deleted.",
+	movedCount: 4,
+	folderCount: 2,
+	createdFolderCount: 1,
+};
+
+const undoButton = () =>
+	screen.getByRole("button", { name: /undo this sort/i }) as HTMLButtonElement;
+
+describe("ResultCard undo control (S10 duplicate-undo guard)", () => {
+	it("offers an enabled undo control that calls back with the whole result", () => {
+		const onUndo = vi.fn();
+		render(<MessageCard message={RESULT} onUndo={onUndo} />);
+
+		// The completed sort is summarised with its guarantee restated.
+		expect(screen.getByText("Sort complete")).toBeTruthy();
+		expect(
+			screen.getByText(/Nothing was renamed, overwritten, or deleted\./),
+		).toBeTruthy();
+
+		const button = undoButton();
+		expect(button.disabled).toBe(false);
+		fireEvent.click(button);
+		expect(onUndo).toHaveBeenCalledTimes(1);
+		expect(onUndo).toHaveBeenCalledWith(RESULT);
+	});
+
+	it("disables the control once undone and refuses a second undo", () => {
+		const onUndo = vi.fn();
+		render(<MessageCard message={RESULT} onUndo={onUndo} undone />);
+
+		// The terminal state relabels the control and disables it.
+		const button = screen.getByRole("button", {
+			name: /undone/i,
+		}) as HTMLButtonElement;
+		expect(button.disabled).toBe(true);
+		// It states why, for assistive tech.
+		expect(button.getAttribute("aria-describedby")).toBe(
+			"result-undo-reason-result-1",
+		);
+		const reason = document.getElementById("result-undo-reason-result-1");
+		expect(reason?.textContent).toMatch(/already been undone/i);
+
+		// Clicking the disabled control does nothing — a second undo is refused.
+		fireEvent.click(button);
+		expect(onUndo).not.toHaveBeenCalled();
+	});
+});
+
+/** A tiny two-destination plan (one new, one existing) for undo card scenarios. */
+const UNDO_FOLDERS: readonly PlanFolder[] = [
+	{ name: "Screenshots", isNew: true, files: ["s1.png", "s2.png"] },
+	{ name: "Contracts", isNew: false, files: ["lease.pdf", "nda.pdf"] },
+];
+
+const undoMessage = (outcome: "complete" | "partial" | "unavailable") =>
+	buildUndoMessage({ id: "undo-1", now: 0, outcome, folders: UNDO_FOLDERS });
+
+const GUARANTEE = /Nothing was renamed, overwritten, or deleted\./;
+
+describe("UndoCard distinguishes all three outcomes (S10 conflict matrix)", () => {
+	it("presents a complete undo: everything restored, honest guarantee, no left-in-place list", () => {
+		render(<MessageCard message={undoMessage("complete")} />);
+
+		expect(screen.getByText("Sort undone")).toBeTruthy();
+		expect(screen.getByText(/Restored 4 files/i)).toBeTruthy();
+		expect(screen.getByText(GUARANTEE)).toBeTruthy();
+
+		// Every file is in the restored breakdown; nothing was left in place.
+		expect(
+			screen.getByRole("region", { name: /restored to where they were/i }),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("region", { name: /left exactly where they are/i }),
+		).toBeNull();
+	});
+
+	it("presents a partial undo: a warning that breaks down restored vs left, with the conflict reason", () => {
+		render(<MessageCard message={undoMessage("partial")} />);
+
+		expect(screen.getByText("Sort partly undone")).toBeTruthy();
+		expect(screen.getByText(GUARANTEE)).toBeTruthy();
+
+		// Both sides of the split are shown as their own breakdown sections.
+		expect(
+			screen.getByRole("region", { name: /restored to where they were/i }),
+		).toBeTruthy();
+		const left = screen.getByRole("region", {
+			name: /left exactly where they are/i,
+		});
+		// A left-in-place file states the honest conflict reason (never a path).
+		expect(within(left).getByText(/never overwrites/i)).toBeTruthy();
+
+		// The per-folder outcomes are shown too.
+		expect(screen.getByRole("region", { name: /^folders$/i })).toBeTruthy();
+	});
+
+	it("presents an unavailable undo: a danger that restored nothing and left every file in place", () => {
+		render(<MessageCard message={undoMessage("unavailable")} />);
+
+		expect(screen.getByText(/couldn.t undo this sort/i)).toBeTruthy();
+		expect(screen.getByText(/exactly where the sort left them/i)).toBeTruthy();
+		expect(screen.getByText(GUARANTEE)).toBeTruthy();
+
+		// Nothing to break down: no restored / left-in-place / folder sections.
+		expect(
+			screen.queryByRole("region", { name: /restored to where they were/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("region", { name: /left exactly where they are/i }),
+		).toBeNull();
+	});
+
+	it("keeps the three outcomes visually distinct via their titles", () => {
+		const titles = (["complete", "partial", "unavailable"] as const).map(
+			(outcome) => {
+				const { unmount } = render(
+					<MessageCard message={undoMessage(outcome)} />,
+				);
+				const article = screen.getByRole("article");
+				const title = article.querySelector("h3")?.textContent ?? "";
+				unmount();
+				return title;
+			},
+		);
+		expect(new Set(titles).size).toBe(3);
 	});
 });

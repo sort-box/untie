@@ -10,6 +10,11 @@
 // followed by an `undo`. `failed` is the terminal error state for any step.
 
 import type { ApplyJournalState } from "./apply-progress-model";
+import type {
+	UndoBatchOutcome,
+	UndoFileResult,
+	UndoFolderResult,
+} from "./undo-outcome-model";
 
 /** A destination folder in a proposed sort plan. */
 export interface PlanFolder {
@@ -106,12 +111,28 @@ export interface ResultMessage extends BaseMessage {
 	readonly createdFolderCount: number;
 }
 
-/** A completed undo of a prior sort. */
+/**
+ * A completed undo of a prior sort. It carries the undo engine's own verdict —
+ * the batch outcome plus the per-file and per-folder outcomes (display names and
+ * opaque ids only, NEVER a path) — so the card can present COMPLETE, PARTIAL, and
+ * UNAVAILABLE undos honestly, with every count derived from this data. The
+ * headline, summary, and breakdown all come from `undoPresentation` /
+ * `undoFileLine` / `undoFolderLine` over these fields.
+ */
 export interface UndoMessage extends BaseMessage {
 	readonly kind: "undo";
-	readonly summary: string;
-	readonly restoredCount: number;
-	readonly removedFolderCount: number;
+	/** The engine's batch-level verdict for this undo. */
+	readonly outcome: UndoBatchOutcome;
+	/** Per-file undo outcomes (opaque itemIds + display names only — never a path). */
+	readonly files: readonly UndoFileResult[];
+	/** Per-folder undo outcomes (opaque folderIds + display names only — never a path). */
+	readonly folders: readonly UndoFolderResult[];
+	/**
+	 * The id of the `result` message this undo reverses, so the pane can mark that
+	 * sort undone and refuse a second undo (the engine only undoes an `applied`
+	 * batch). An opaque message id — never a filesystem path.
+	 */
+	readonly resultId?: string;
 }
 
 /** A step that could not complete (quota, offline, timeout, cancellation…). */
@@ -169,8 +190,29 @@ export function messageAccessibleLabel(message: ChatMessage): string {
 		}
 		case "result":
 			return `Sort complete: ${message.summary}`;
-		case "undo":
-			return `Undo complete: ${message.summary}`;
+		case "undo": {
+			// Derived, path-free label mirroring the three undo outcomes; the undo
+			// card computes the same via `undoPresentation`. Restored counts the
+			// files the engine actually put back.
+			const restored = message.files.reduce(
+				(count, file) =>
+					count +
+					(file.outcome === "restored" || file.outcome === "restored_modified"
+						? 1
+						: 0),
+				0,
+			);
+			switch (message.outcome) {
+				case "complete":
+					return `Sort undone: ${restored} ${restored === 1 ? "file" : "files"} restored.`;
+				case "partial":
+					return `Sort partly undone: ${restored} of ${message.files.length} files restored.`;
+				case "unavailable":
+					return "Couldn't undo the sort: nothing could be restored.";
+				default:
+					return assertNever(message.outcome);
+			}
+		}
 		case "failed":
 			return `Failed: ${message.title}. ${message.detail}`;
 		default:
