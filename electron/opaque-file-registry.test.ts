@@ -55,6 +55,57 @@ afterEach(() => {
 });
 
 describe("opaque file registry", () => {
+	it("registers indexed results as opaque file IDs", () => {
+		const indexed = createRegistry().registerIndexedResults({
+			grant: store.getGrant("grant-1"),
+			canonicalGrantPath: fs.realpathSync.native(folder),
+			files: [{ name: "notes.txt", path: file }],
+		});
+
+		expect(indexed).toEqual([
+			{ itemId: expect.stringMatching(FILE_ID_PATTERN), name: "notes.txt" },
+		]);
+		expect(JSON.stringify(indexed)).not.toContain(folder);
+	});
+
+	it("rejects an indexed path outside its grant", () => {
+		const outside = path.join(os.tmpdir(), `outside-${Date.now()}.txt`);
+		fs.writeFileSync(outside, "outside");
+		try {
+			expect(() =>
+				createRegistry().registerIndexedResults({
+					grant: store.getGrant("grant-1"),
+					canonicalGrantPath: fs.realpathSync.native(folder),
+					files: [{ name: "outside.txt", path: outside }],
+				}),
+			).toThrowError(expect.objectContaining({ code: "NOT_CONTAINED" }));
+		} finally {
+			fs.rmSync(outside, { force: true });
+		}
+	});
+
+	it("skips missing and non-file indexed entries while returning valid files", () => {
+		const directoryEntry = path.join(folder, "directory");
+		fs.mkdirSync(directoryEntry);
+		const missing = path.join(folder, "deleted.txt");
+		fs.writeFileSync(missing, "delete me");
+		fs.rmSync(missing);
+
+		const indexed = createRegistry().registerIndexedResults({
+			grant: store.getGrant("grant-1"),
+			canonicalGrantPath: fs.realpathSync.native(folder),
+			files: [
+				{ name: "deleted.txt", path: missing },
+				{ name: "directory", path: directoryEntry },
+				{ name: "notes.txt", path: file },
+			],
+		});
+
+		expect(indexed).toEqual([
+			{ itemId: expect.stringMatching(FILE_ID_PATTERN), name: "notes.txt" },
+		]);
+	});
+
 	it("issues a stable path-free renderer surface and resolves only in main", () => {
 		const registry = createRegistry();
 		const first = scan(registry);

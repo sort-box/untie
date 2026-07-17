@@ -375,20 +375,61 @@ const contracts = Object.freeze({
 	},
 	queryIndex: {
 		request(value) {
-			const checked = exactKeys(value, ["query", "limit"], "request");
+			const checked = exactKeys(
+				value,
+				["grantId", "interpretedQuery", "limit"],
+				"request",
+			);
 			if (!checked.ok) return checked;
-			if (typeof value.query !== "string" || value.query.length === 0) {
-				return validationError("query must be a non-empty string");
-			}
+			if (typeof value.grantId !== "string" || value.grantId.length === 0)
+				return validationError("grantId must be a non-empty opaque ID");
+			const query = value.interpretedQuery;
+			const queryCheck = exactKeys(
+				query,
+				["searchTerms", "filters"],
+				"interpretedQuery",
+			);
+			if (!queryCheck.ok) return queryCheck;
+			if (
+				!Array.isArray(query.searchTerms) ||
+				query.searchTerms.length === 0 ||
+				query.searchTerms.some(
+					(term) => typeof term !== "string" || term.length === 0,
+				)
+			)
+				return validationError("searchTerms must be a non-empty string array");
+			const filtersCheck = exactKeys(
+				query.filters,
+				["extensions", "namePatterns", "modifiedAt"],
+				"filters",
+			);
+			if (!filtersCheck.ok) return filtersCheck;
+			if (
+				!Array.isArray(query.filters.extensions) ||
+				!Array.isArray(query.filters.namePatterns)
+			)
+				return validationError("filters must contain arrays");
 			if (
 				value.limit !== undefined &&
-				(!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 100)
+				(!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 20)
 			) {
-				return validationError("limit must be an integer from 1 to 100");
+				return validationError("limit must be an integer from 1 to 20");
 			}
-			return valid({ query: value.query, limit: value.limit });
+			return valid(value);
 		},
-		response: exactResponse({ itemIds: stringArray }),
+		response: exactResponse({
+			partial: boolean,
+			candidates: (value) =>
+				Array.isArray(value) &&
+				value.every(
+					(candidate) =>
+						exactResponse({
+							itemId: nonEmptyString,
+							displayName: nonEmptyString,
+							snippet: nonEmptyString,
+						})(candidate).ok,
+				),
+		}),
 	},
 	preparePlan: {
 		request(value) {

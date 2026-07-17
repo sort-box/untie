@@ -25,6 +25,7 @@ const { createCrashRecoveryEngine } = require("./crash-recovery.cjs");
 const { runStartupGate } = require("./startup-gate.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
 const { createIndexSynchronizationEngine } = require("./index-sync.cjs");
+const { createIndexRetrieval } = require("./index-retrieval.cjs");
 const { createFilesystemWatcher } = require("./filesystem-watcher.cjs");
 const { createGrantLifecycle } = require("./grant-lifecycle.cjs");
 const { createChatStore } = require("./chat-store.cjs");
@@ -50,6 +51,7 @@ let folderGrantService;
 let folderScanner;
 let opaqueFileRegistry;
 let indexSyncEngine;
+let indexRetrieval;
 let filesystemWatcher;
 let sortRiskService;
 let startupStatus = {
@@ -134,6 +136,8 @@ const capabilityImplementations = {
 		};
 	},
 	getIndexStatus: async ({ grantId }) => indexSyncEngine.getStatus(grantId),
+	queryIndex: async (input, { authorization }) =>
+		indexRetrieval.query(input, authorization),
 	classifyFolderRisk: async ({ grantId }, { signal, authorization }) =>
 		sortRiskService.classify({
 			grantId,
@@ -285,6 +289,11 @@ app.whenReady().then(async () => {
 				scanner: folderScanner,
 				authorizer: capabilityAuthorizer,
 			});
+			indexRetrieval = createIndexRetrieval({
+				index: fileIndex,
+				indexSync: indexSyncEngine,
+				opaqueFileRegistry,
+			});
 			indexSyncEngine.subscribe((update) => {
 				for (const window of BrowserWindow.getAllWindows())
 					window.webContents.send(INDEX_STATUS_CHANNEL, update);
@@ -357,6 +366,7 @@ app.on("before-quit", () => {
 	sortRiskService = undefined;
 	opaqueFileRegistry = undefined;
 	indexSyncEngine = undefined;
+	indexRetrieval = undefined;
 	filesystemWatcher = undefined;
 	productionServer?.close();
 });
