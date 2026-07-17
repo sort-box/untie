@@ -131,6 +131,13 @@ class CapabilityReferenceStore {
 		return this.#operations.get(operationId);
 	}
 
+	clear() {
+		this.#grants.clear();
+		this.#items.clear();
+		this.#plans.clear();
+		this.#operations.clear();
+	}
+
 	invalidateGrant(grantId) {
 		for (const [id, item] of this.#items) {
 			if (item.grantId === grantId)

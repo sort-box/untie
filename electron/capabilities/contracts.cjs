@@ -20,6 +20,7 @@ const capabilityNames = Object.freeze([
 	"saveChatSession",
 	"deleteChatSession",
 	"deleteAllChatData",
+	"deleteAllLocalData",
 ]);
 
 const errorCodes = Object.freeze([
@@ -545,6 +546,10 @@ const contracts = Object.freeze({
 	deleteAllChatData: {
 		request: emptyObject,
 		response: exactResponse({ deletedCount: (value) => timestamp(value) }),
+	},
+	deleteAllLocalData: {
+		request: emptyObject,
+		response: exactResponse({ erased: boolean }),
 	},
 });
 
