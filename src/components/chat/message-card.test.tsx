@@ -156,3 +156,176 @@ describe("PlanCard review + approval (W13)", () => {
 		expect((approved as HTMLButtonElement).disabled).toBe(true);
 	});
 });
+
+/**
+ * A ready plan where the model was less certain about `shot-3.png` — used to
+ * prove the low-confidence flag and the exclusion behaviour (S4).
+ */
+const READY_PLAN_S4: PlanMessage = {
+	...READY_PLAN,
+	folders: [
+		{
+			name: "Screenshots",
+			isNew: true,
+			files: ["shot-1.png", "shot-2.png", "shot-3.png"],
+			lowConfidenceFiles: ["shot-3.png"],
+		},
+		{ name: "Contracts", isNew: false, files: ["lease.pdf", "nda.pdf"] },
+	],
+};
+
+const expandFullList = () =>
+	fireEvent.click(screen.getByRole("button", { name: /review all 5 moves/i }));
+
+describe("PlanCard full review + exclusions (S4)", () => {
+	it("progressively discloses the complete move set behind the expand control", () => {
+		render(<MessageCard message={READY_PLAN_S4} />);
+
+		// Collapsed: the deepest-nested move is not yet in the document.
+		expect(screen.queryByText("shot-3.png")).toBeNull();
+
+		expandFullList();
+
+		// Expanded: every single proposed move is now inspectable.
+		for (const folder of READY_PLAN_S4.folders) {
+			const region = screen.getByRole("region", {
+				name: new RegExp(folder.name, "i"),
+			});
+			for (const file of folder.files) {
+				expect(within(region).getByText(file)).toBeTruthy();
+			}
+		}
+	});
+
+	it("flags a low-confidence move with an accessible, non-colour marker", () => {
+		render(<MessageCard message={READY_PLAN_S4} />);
+		expandFullList();
+
+		const screenshots = screen.getByRole("region", { name: /Screenshots/i });
+		// The flag is text (not colour alone) and sits on the flagged file's row.
+		const flags = within(screenshots).getAllByText(/less certain/i);
+		expect(flags).toHaveLength(1);
+		expect(flags[0].closest("li")?.textContent).toContain("shot-3.png");
+		// Confident moves carry no flag.
+		expect(within(screenshots).queryAllByText(/less certain/i)).toHaveLength(1);
+	});
+
+	it("excludes a file, marks it, and drops it from the counts and approval copy", () => {
+		render(<MessageCard message={READY_PLAN_S4} />);
+		// Baseline exact-counts copy for the full plan.
+		expect(screen.getByText(EXACT_COUNTS_COPY)).toBeTruthy();
+
+		expandFullList();
+		const includeNda = screen.getByRole("checkbox", {
+			name: /include nda\.pdf/i,
+		}) as HTMLInputElement;
+		expect(includeNda.checked).toBe(true);
+
+		fireEvent.click(includeNda);
+		expect(includeNda.checked).toBe(false);
+
+		// The row is marked as excluded (state conveyed by text, not colour).
+		expect(includeNda.closest("li")?.textContent).toMatch(/excluded/i);
+		// The approval copy and the header count both drop the excluded file.
+		expect(
+			screen.getByText(
+				"Create 1 folder and move 4 files. Nothing is renamed, overwritten, or deleted.",
+			),
+		).toBeTruthy();
+		expect(screen.getByText(/· 1 excluded/)).toBeTruthy();
+	});
+
+	it("keeps excluded files out of the approved snapshot sent to apply", () => {
+		const onApprovePlan = vi.fn();
+		render(
+			<MessageCard message={READY_PLAN_S4} onApprovePlan={onApprovePlan} />,
+		);
+		expandFullList();
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: /include nda\.pdf/i }),
+		);
+
+		fireEvent.click(approveButton());
+		expect(onApprovePlan).toHaveBeenCalledTimes(1);
+		const approved = onApprovePlan.mock.calls[0]?.[0] as PlanMessage;
+		const approvedFiles = approved.folders.flatMap((folder) => folder.files);
+		expect(approvedFiles).not.toContain("nda.pdf");
+		expect(approvedFiles).toContain("lease.pdf");
+		expect(approved.fileCount).toBe(4);
+	});
+
+	it("excludes a whole destination via its group checkbox", () => {
+		const onApprovePlan = vi.fn();
+		render(
+			<MessageCard message={READY_PLAN_S4} onApprovePlan={onApprovePlan} />,
+		);
+
+		const contractsGroup = screen.getByRole("checkbox", {
+			name: /include the .* for contracts/i,
+		}) as HTMLInputElement;
+		fireEvent.click(contractsGroup);
+
+		// Both Contracts files leave the plan; only Screenshots remains.
+		expect(
+			screen.getByText(
+				"Create 1 folder and move 3 files. Nothing is renamed, overwritten, or deleted.",
+			),
+		).toBeTruthy();
+
+		fireEvent.click(approveButton());
+		const approved = onApprovePlan.mock.calls[0]?.[0] as PlanMessage;
+		expect(approved.folders.map((folder) => folder.name)).toEqual([
+			"Screenshots",
+		]);
+	});
+
+	it("blocks approval when every file is excluded and explains why", () => {
+		const onApprovePlan = vi.fn();
+		render(
+			<MessageCard message={READY_PLAN_S4} onApprovePlan={onApprovePlan} />,
+		);
+
+		// Exclude both destinations wholesale.
+		for (const name of [/for screenshots/i, /for contracts/i]) {
+			fireEvent.click(screen.getByRole("checkbox", { name }));
+		}
+
+		const button = approveButton();
+		expect(button.disabled).toBe(true);
+		fireEvent.click(button);
+		expect(onApprovePlan).not.toHaveBeenCalled();
+		expect(screen.getByText(/every file is excluded/i)).toBeTruthy();
+	});
+
+	it("exposes expand, exclusion, and approve as keyboard-operable controls", () => {
+		render(<MessageCard message={READY_PLAN_S4} />);
+
+		// Native <button>: focusable and operable by Enter/Space.
+		const toggle = screen.getByRole("button", { name: /review all 5 moves/i });
+		toggle.focus();
+		expect(document.activeElement).toBe(toggle);
+
+		expandFullList();
+		// Native checkbox: focusable and operable by Space, and enabled here.
+		const checkbox = screen.getByRole("checkbox", {
+			name: /include nda\.pdf/i,
+		}) as HTMLInputElement;
+		expect(checkbox.tagName).toBe("INPUT");
+		expect(checkbox.disabled).toBe(false);
+		checkbox.focus();
+		expect(document.activeElement).toBe(checkbox);
+
+		const approve = approveButton();
+		approve.focus();
+		expect(document.activeElement).toBe(approve);
+	});
+
+	it("renders the exclusion controls read-only for a non-ready plan", () => {
+		render(<MessageCard message={{ ...READY_PLAN_S4, status: "stale" }} />);
+		expandFullList();
+		const checkbox = screen.getByRole("checkbox", {
+			name: /include nda\.pdf/i,
+		}) as HTMLInputElement;
+		expect(checkbox.disabled).toBe(true);
+	});
+});

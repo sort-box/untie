@@ -21,6 +21,13 @@ export interface PlanFolder {
 	 * is the full list, not a sample; the count derives from `files.length`.
 	 */
 	readonly files: readonly string[];
+	/**
+	 * The subset of `files` the model was LESS certain about routing here (S4). A
+	 * clear, accessible flag surfaces these so the user can scrutinise the shakier
+	 * moves before approving. Optional; absent means every move here is confident.
+	 * Entries must be members of `files`.
+	 */
+	readonly lowConfidenceFiles?: readonly string[];
 }
 
 /**
@@ -172,6 +179,82 @@ export function planMoveCount(folders: readonly PlanFolder[]): number {
 /** How many destinations the plan would create (new folders only). */
 export function planCreatedFolderCount(folders: readonly PlanFolder[]): number {
 	return folders.reduce((count, folder) => count + (folder.isNew ? 1 : 0), 0);
+}
+
+/** Whether `file` is one of the destination's low-confidence moves (S4). */
+export function isLowConfidenceMove(folder: PlanFolder, file: string): boolean {
+	return folder.lowConfidenceFiles?.includes(file) ?? false;
+}
+
+/**
+ * A stable identifier for one proposed move — a single file within a specific
+ * destination. The plan is an immutable snapshot for the lifetime of its card,
+ * so positional `(folder, file)` indices are a safe, collision-free key even
+ * when two destinations share a filename. Drives the S4 exclusion set.
+ */
+export function planMoveKey(folderIndex: number, fileIndex: number): string {
+	return `${folderIndex}:${fileIndex}`;
+}
+
+/** Every move key for one destination — used to toggle a whole group at once. */
+export function planGroupMoveKeys(
+	folderIndex: number,
+	folder: PlanFolder,
+): string[] {
+	return folder.files.map((_, fileIndex) =>
+		planMoveKey(folderIndex, fileIndex),
+	);
+}
+
+/**
+ * The destinations that would actually be applied given an exclusion set (S4):
+ * every excluded move (keyed by `planMoveKey`) is dropped, and any destination
+ * left with no files disappears entirely. `lowConfidenceFiles` is trimmed to the
+ * survivors. Deriving the review counts, the approval copy, and the approved
+ * snapshot from this keeps them all in lock-step with what the user chose to keep.
+ */
+export function planFoldersExcluding(
+	folders: readonly PlanFolder[],
+	excluded: ReadonlySet<string>,
+): PlanFolder[] {
+	const kept: PlanFolder[] = [];
+	folders.forEach((folder, folderIndex) => {
+		const files = folder.files.filter(
+			(_, fileIndex) => !excluded.has(planMoveKey(folderIndex, fileIndex)),
+		);
+		if (files.length === 0) return;
+		if (folder.lowConfidenceFiles) {
+			kept.push({
+				...folder,
+				files,
+				lowConfidenceFiles: folder.lowConfidenceFiles.filter((name) =>
+					files.includes(name),
+				),
+			});
+		} else {
+			kept.push({ ...folder, files });
+		}
+	});
+	return kept;
+}
+
+/**
+ * A copy of `message` bound to a new (post-exclusion) destination set, with the
+ * denormalised counts recomputed so they can never disagree with the folders.
+ * The model's human `summary` text is preserved. This is the exact snapshot that
+ * gets approved and sent to apply, so an excluded file can never slip through.
+ */
+export function planWithFolders(
+	message: PlanMessage,
+	folders: readonly PlanFolder[],
+): PlanMessage {
+	return {
+		...message,
+		folders,
+		fileCount: planMoveCount(folders),
+		folderCount: folders.length,
+		createdFolderCount: planCreatedFolderCount(folders),
+	};
 }
 
 /** Only a `ready` plan may be approved. */

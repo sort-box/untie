@@ -62,6 +62,8 @@ const MOCK_PLAN_FOLDERS: readonly PlanFolder[] = [
 			"phone-bill-may.pdf",
 			"receipt-coffee.pdf",
 		],
+		// The model was unsure whether these two belong here vs. elsewhere.
+		lowConfidenceFiles: ["phone-bill-may.pdf", "receipt-coffee.pdf"],
 	},
 	{
 		name: "Screenshots",
@@ -122,6 +124,8 @@ const MOCK_PLAN_FOLDERS: readonly PlanFolder[] = [
 		name: "Misc PDFs",
 		isNew: true,
 		files: ["notes.pdf", "boarding-pass.pdf"],
+		// A catch-all destination is inherently a low-confidence guess.
+		lowConfidenceFiles: ["notes.pdf", "boarding-pass.pdf"],
 	},
 ];
 

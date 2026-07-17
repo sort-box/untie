@@ -3,6 +3,7 @@ import {
 	CheckCircle2Icon,
 	CheckIcon,
 	ChevronDownIcon,
+	CircleHelpIcon,
 	ClockAlertIcon,
 	FolderIcon,
 	FolderPlusIcon,
@@ -10,13 +11,14 @@ import {
 	SparklesIcon,
 	Undo2Icon,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "#/components/ui/button";
 import { cn } from "#/lib/utils";
 import {
 	assertNever,
 	type ChatMessage,
+	isLowConfidenceMove,
 	isPlanApprovable,
 	messageAccessibleLabel,
 	type PlanFolder,
@@ -24,7 +26,11 @@ import {
 	planApprovalCopy,
 	planBlockReason,
 	planCreatedFolderCount,
+	planFoldersExcluding,
+	planGroupMoveKeys,
 	planMoveCount,
+	planMoveKey,
+	planWithFolders,
 } from "./message-model";
 
 /** Callback invoked when the user approves a `ready` plan from its card. */
@@ -196,14 +202,19 @@ function ProgressBar({ current, total }: { current: number; total: number }) {
 }
 
 /**
- * The hero card: a reviewable sort plan with exact-counts approval (W13).
+ * The hero card: a reviewable sort plan with exact-counts approval (W13) and
+ * per-file / per-destination exclusions (S4).
  *
- * The card is safety-first: it shows the grouped destinations up front and the
- * COMPLETE move set (every file → its destination) one expand away, so nothing
- * moves that the user hasn't been able to inspect. The approval line states the
- * exact counts and the v1 guarantee, derived from the plan's own data — and the
- * Approve button is only enabled for a `ready` plan. A `stale`/`invalid` plan
- * shows why it can't be approved and disables the control.
+ * The card is safety-first and progressive: it shows the grouped destinations
+ * up front and the COMPLETE move set (every file → its destination) one expand
+ * away, so nothing moves that the user hasn't been able to inspect. Moves the
+ * model was less certain about are flagged. The user can untick any file — or a
+ * whole destination — to leave it where it is; excluded files are visibly marked
+ * and drop out of every count, the exact-counts approval line, and the snapshot
+ * that would be approved and sent. The approval line and counts derive from the
+ * plan's own data — never hardcoded — so the review and the eventual apply can
+ * never disagree. Approve is only enabled for a `ready` plan with at least one
+ * file kept; a `stale`/`invalid` plan shows why it can't be approved.
  */
 function PlanCard({
 	message,
@@ -213,13 +224,33 @@ function PlanCard({
 	onApprove?: ApprovePlanHandler;
 }) {
 	const [showAllMoves, setShowAllMoves] = useState(false);
+	// Files the user has chosen to leave out of this plan, keyed by `planMoveKey`.
+	// Exclusion is UI state: it trims what is displayed, counted, and approved —
+	// it never mutates the immutable plan snapshot the card was handed.
+	const [excluded, setExcluded] = useState<ReadonlySet<string>>(
+		() => new Set<string>(),
+	);
 
-	// Every count derives from the plan's own move set — never hardcoded — so the
-	// review, the approval copy, and the eventual apply can never disagree.
-	const moveCount = planMoveCount(message.folders);
-	const createdCount = planCreatedFolderCount(message.folders);
-	const existingCount = message.folders.length - createdCount;
-	const approvable = isPlanApprovable(message.status);
+	// Only a `ready` plan can be edited; stale/invalid/approved are terminal, so
+	// the exclusion controls are rendered read-only (disabled) for those.
+	const editable = isPlanApprovable(message.status);
+
+	// The destinations that would actually be applied once exclusions are removed.
+	// Every count, the approval copy, and the approved snapshot derive from THIS —
+	// never the raw folders — so nothing the user excluded can slip through.
+	const includedFolders = useMemo(
+		() => planFoldersExcluding(message.folders, excluded),
+		[message.folders, excluded],
+	);
+
+	const totalMoveCount = planMoveCount(message.folders);
+	const moveCount = planMoveCount(includedFolders);
+	const excludedCount = totalMoveCount - moveCount;
+	const createdCount = planCreatedFolderCount(includedFolders);
+	const existingCount = includedFolders.length - createdCount;
+
+	const nothingToMove = moveCount === 0;
+	const approvable = editable && !nothingToMove;
 	const blockReason = planBlockReason(message);
 	const isApproved = message.status === "approved";
 	// Narrows away "ready" so the status banner gets a concrete blocked status.
@@ -228,6 +259,51 @@ function PlanCard({
 	const movesRegionId = `plan-moves-${message.id}`;
 	const approvalCopyId = `plan-approval-${message.id}`;
 	const reasonId = `plan-reason-${message.id}`;
+	const emptyNoteId = `plan-empty-${message.id}`;
+	const exclusionStatusId = `plan-excluded-${message.id}`;
+
+	// What the Approve button points assistive tech at: the exact-counts copy when
+	// it can be approved, the blocked-status reason when a non-ready plan can't be,
+	// otherwise the note explaining that everything has been excluded.
+	const describedBy = approvable
+		? approvalCopyId
+		: blockedStatus && blockReason
+			? reasonId
+			: emptyNoteId;
+
+	const toggleFile = (key: string, isExcluded: boolean) => {
+		setExcluded((prev) => {
+			const next = new Set(prev);
+			if (isExcluded) next.delete(key);
+			else next.add(key);
+			return next;
+		});
+	};
+
+	const toggleGroup = (
+		folderIndex: number,
+		folder: PlanFolder,
+		allExcluded: boolean,
+	) => {
+		const keys = planGroupMoveKeys(folderIndex, folder);
+		setExcluded((prev) => {
+			const next = new Set(prev);
+			for (const key of keys) {
+				if (allExcluded) next.delete(key);
+				else next.add(key);
+			}
+			return next;
+		});
+	};
+
+	const approve = () => {
+		if (!approvable) return;
+		// Approve the trimmed snapshot so excluded files never reach apply; when
+		// nothing is excluded the original plan is forwarded unchanged.
+		onApprove?.(
+			excluded.size === 0 ? message : planWithFolders(message, includedFolders),
+		);
+	};
 
 	return (
 		<article
@@ -243,6 +319,7 @@ function PlanCard({
 					</h3>
 					<p className="mt-1 text-muted-foreground text-xs">
 						{createdCount} new · {existingCount} existing · in Downloads
+						{excludedCount > 0 ? ` · ${excludedCount} excluded` : ""}
 					</p>
 				</header>
 
@@ -255,8 +332,15 @@ function PlanCard({
 				) : null}
 
 				<ul className="space-y-1.5" aria-label="Proposed destinations">
-					{message.folders.map((folder) => (
-						<PlanFolderRow key={folder.name} folder={folder} />
+					{message.folders.map((folder, folderIndex) => (
+						<PlanFolderRow
+							key={folder.name}
+							folder={folder}
+							folderIndex={folderIndex}
+							excluded={excluded}
+							editable={editable}
+							onToggleGroup={toggleGroup}
+						/>
 					))}
 				</ul>
 
@@ -275,7 +359,7 @@ function PlanCard({
 							)}
 							aria-hidden="true"
 						/>
-						{showAllMoves ? "Hide" : "Review"} all {moveCount} moves
+						{showAllMoves ? "Hide" : "Review"} all {totalMoveCount} moves
 					</button>
 					{showAllMoves ? (
 						<section
@@ -283,26 +367,49 @@ function PlanCard({
 							aria-label="All proposed moves"
 							className="mt-2 space-y-3"
 						>
-							{message.folders.map((folder) => (
-								<FullMoveGroup key={folder.name} folder={folder} />
+							<p className="text-muted-foreground text-xs">
+								Untick any file — or a whole destination — to leave it where it
+								is. Excluded files stay put and drop out of the counts below.
+							</p>
+							{message.folders.map((folder, folderIndex) => (
+								<FullMoveGroup
+									key={folder.name}
+									folder={folder}
+									folderIndex={folderIndex}
+									excluded={excluded}
+									editable={editable}
+									onToggleFile={toggleFile}
+								/>
 							))}
 						</section>
 					) : null}
 				</div>
 
 				<footer className="mt-4 border-border border-t pt-3">
-					<p
-						id={approvalCopyId}
-						className="font-medium text-foreground text-sm"
-					>
-						{planApprovalCopy(message.folders)}
+					{/* Announce exclusion changes to assistive tech without a visual echo. */}
+					<p id={exclusionStatusId} aria-live="polite" className="sr-only">
+						{excludedCount === 0
+							? "No files excluded."
+							: `${excludedCount} of ${totalMoveCount} files excluded.`}
 					</p>
+					{nothingToMove && !blockedStatus ? (
+						<p id={emptyNoteId} className="font-medium text-foreground text-sm">
+							Every file is excluded. Keep at least one to approve.
+						</p>
+					) : (
+						<p
+							id={approvalCopyId}
+							className="font-medium text-foreground text-sm"
+						>
+							{planApprovalCopy(includedFolders)}
+						</p>
+					)}
 					<div className="mt-3">
 						<Button
 							type="button"
-							onClick={() => onApprove?.(message)}
+							onClick={approve}
 							disabled={!approvable}
-							aria-describedby={approvable ? approvalCopyId : reasonId}
+							aria-describedby={describedBy}
 						>
 							{isApproved ? (
 								<CheckCircle2Icon aria-hidden="true" />
@@ -372,12 +479,60 @@ function PlanStatusBanner({
 	);
 }
 
-/** A single grouped-destination summary row: name, new/existing, count, preview. */
-function PlanFolderRow({ folder }: { folder: PlanFolder }) {
-	const count = folder.files.length;
+/**
+ * A single grouped-destination summary row: a group exclusion checkbox, name,
+ * new/existing, the (kept) count, a preview, and a low-confidence hint. The
+ * checkbox excludes/re-includes the WHOLE destination at once and shows an
+ * indeterminate state when only some of its files are excluded.
+ */
+function PlanFolderRow({
+	folder,
+	folderIndex,
+	excluded,
+	editable,
+	onToggleGroup,
+}: {
+	folder: PlanFolder;
+	folderIndex: number;
+	excluded: ReadonlySet<string>;
+	editable: boolean;
+	onToggleGroup: (
+		folderIndex: number,
+		folder: PlanFolder,
+		allExcluded: boolean,
+	) => void;
+}) {
+	const groupKeys = planGroupMoveKeys(folderIndex, folder);
+	const excludedInGroup = groupKeys.reduce(
+		(sum, key) => sum + (excluded.has(key) ? 1 : 0),
+		0,
+	);
+	const allExcluded = excludedInGroup === groupKeys.length;
+	const someExcluded = excludedInGroup > 0 && !allExcluded;
+	const keptCount = groupKeys.length - excludedInGroup;
+	const lowConfidenceCount = folder.lowConfidenceFiles?.length ?? 0;
 	const preview = folder.files.slice(0, 2);
+	const noun = folder.files.length === 1 ? "file" : "files";
+
 	return (
-		<li className="flex items-start gap-3 rounded-lg border border-border/70 bg-[color:var(--chip-bg)] px-3 py-2">
+		<li
+			className={cn(
+				"flex items-start gap-3 rounded-lg border border-border/70 bg-[color:var(--chip-bg)] px-3 py-2",
+				allExcluded && "opacity-60",
+			)}
+		>
+			<input
+				type="checkbox"
+				checked={!allExcluded}
+				disabled={!editable}
+				ref={(el) => {
+					if (el) el.indeterminate = someExcluded;
+				}}
+				onChange={() => onToggleGroup(folderIndex, folder, allExcluded)}
+				aria-label={`Include the ${folder.files.length} ${noun} for ${folder.name}`}
+				className="mt-0.5 size-4 shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed"
+				style={{ accentColor: "var(--lagoon-deep)" }}
+			/>
 			<span
 				className="mt-0.5 text-[color:var(--palm)]"
 				aria-hidden="true"
@@ -392,26 +547,62 @@ function PlanFolderRow({ folder }: { folder: PlanFolder }) {
 			<div className="min-w-0 flex-1">
 				<div className="flex items-baseline justify-between gap-2">
 					<p className="truncate font-medium text-foreground text-sm">
-						{folder.name}
+						<span className={cn(allExcluded && "line-through")}>
+							{folder.name}
+						</span>
 						<span className="ml-2 font-normal text-[10px] text-muted-foreground uppercase tracking-wide">
 							{folder.isNew ? "new" : "existing"}
 						</span>
 					</p>
 					<span className="shrink-0 text-muted-foreground text-xs tabular-nums">
-						{count} {count === 1 ? "file" : "files"}
+						{allExcluded
+							? "excluded"
+							: `${keptCount} ${keptCount === 1 ? "file" : "files"}`}
 					</span>
 				</div>
 				<p className="truncate text-muted-foreground text-xs">
 					{preview.join(" · ")}
-					{count > preview.length ? " · …" : ""}
+					{folder.files.length > preview.length ? " · …" : ""}
 				</p>
+				{lowConfidenceCount > 0 ? (
+					<p className="mt-1 inline-flex items-center gap-1 font-medium text-[11px] text-[color:var(--lagoon-deep)]">
+						<CircleHelpIcon className="size-3" aria-hidden="true" />
+						{lowConfidenceCount} to double-check
+					</p>
+				) : null}
 			</div>
 		</li>
 	);
 }
 
-/** The full move set for one destination: heading + every file as a list item. */
-function FullMoveGroup({ folder }: { folder: PlanFolder }) {
+/** A clear, accessible flag for a move the model was less certain about (S4). */
+function LowConfidenceFlag() {
+	return (
+		<span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[color:var(--chip-line)] bg-[color:var(--chip-bg)] px-1.5 py-0.5 font-medium text-[10px] text-[color:var(--lagoon-deep)]">
+			<CircleHelpIcon className="size-3" aria-hidden="true" />
+			Less certain
+		</span>
+	);
+}
+
+/**
+ * The full move set for one destination: heading + every file as its own row
+ * with a checkbox to exclude it, a low-confidence flag where the model was less
+ * sure, and a clear "excluded" mark once it is left out.
+ */
+function FullMoveGroup({
+	folder,
+	folderIndex,
+	excluded,
+	editable,
+	onToggleFile,
+}: {
+	folder: PlanFolder;
+	folderIndex: number;
+	excluded: ReadonlySet<string>;
+	editable: boolean;
+	onToggleFile: (key: string, isExcluded: boolean) => void;
+}) {
 	const count = folder.files.length;
 	return (
 		<section
@@ -434,15 +625,46 @@ function FullMoveGroup({ folder }: { folder: PlanFolder }) {
 				</span>
 			</h4>
 			<ul className="mt-1 space-y-0.5 border-[color:var(--chip-line)] border-l pl-3">
-				{folder.files.map((file) => (
-					<li
-						key={file}
-						className="truncate text-muted-foreground text-xs"
-						title={file}
-					>
-						{file}
-					</li>
-				))}
+				{folder.files.map((file, fileIndex) => {
+					const key = planMoveKey(folderIndex, fileIndex);
+					const isExcluded = excluded.has(key);
+					const lowConfidence = isLowConfidenceMove(folder, file);
+					return (
+						<li key={key}>
+							<label
+								className={cn(
+									"flex items-center gap-2 rounded px-1 py-0.5 text-xs",
+									editable && "cursor-pointer hover:bg-[color:var(--chip-bg)]",
+								)}
+							>
+								<input
+									type="checkbox"
+									checked={!isExcluded}
+									disabled={!editable}
+									onChange={() => onToggleFile(key, isExcluded)}
+									aria-label={`Include ${file}`}
+									className="size-3.5 shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed"
+									style={{ accentColor: "var(--lagoon-deep)" }}
+								/>
+								<span
+									className={cn(
+										"min-w-0 flex-1 truncate text-muted-foreground",
+										isExcluded && "line-through",
+									)}
+									title={file}
+								>
+									{file}
+								</span>
+								{lowConfidence ? <LowConfidenceFlag /> : null}
+								{isExcluded ? (
+									<span className="shrink-0 font-medium text-[10px] text-muted-foreground uppercase tracking-wide">
+										excluded
+									</span>
+								) : null}
+							</label>
+						</li>
+					);
+				})}
 			</ul>
 		</section>
 	);
