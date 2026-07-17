@@ -3,7 +3,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import {
+	applyOperationCompleted,
+	applyProgressMessage,
+	buildApplyJournalState,
+} from "./apply-progress-model";
 import { ChatPane } from "./chat-pane";
+import type { ChatMessage, PlanFolder } from "./message-model";
 
 // The pane runs the mock driver on real timers; a fresh session with an empty
 // transcript keeps each test independent. Persistence degrades to a no-op here
@@ -103,6 +109,62 @@ describe("ChatPane approval flow (W13 + S6)", () => {
 		expect(blocked).toBe(true);
 		expect(screen.getByText(/out of date/i)).toBeTruthy();
 		expect(screen.queryByText("Sort complete")).toBeNull();
+	}, 15000);
+});
+
+describe("ChatPane apply durability across reload (S7)", () => {
+	// A 10-move plan across three destinations (2 new), enough to leave a
+	// meaningful "3 of 10" mid-apply snapshot.
+	const RESUME_FOLDERS: readonly PlanFolder[] = [
+		{
+			name: "Invoices",
+			isNew: false,
+			files: ["a.pdf", "b.pdf", "c.pdf", "d.pdf"],
+		},
+		{ name: "Photos", isNew: true, files: ["1.jpg", "2.jpg", "3.jpg"] },
+		{ name: "Installers", isNew: true, files: ["x.pkg", "y.dmg", "z.dmg"] },
+	];
+
+	/** Persisted transcript with an apply journaled 3 of 10 done (as after a save). */
+	const seedMidApply = (): ChatMessage[] => {
+		let state = buildApplyJournalState({
+			operationId: "op-resume",
+			locationLabel: "Downloads",
+			folders: RESUME_FOLDERS,
+		});
+		for (let i = 0; i < 3; i += 1) state = applyOperationCompleted(state);
+		const inFlight = applyProgressMessage(state, {
+			id: "apply-resume",
+			createdAt: 42,
+		});
+		const transcript: ChatMessage[] = [
+			{ kind: "user", id: "u1", createdAt: 1, text: "Sort my Downloads" },
+			inFlight,
+		];
+		// The persistence boundary round-trips exactly JSON, like a real reload.
+		return JSON.parse(JSON.stringify(transcript)) as ChatMessage[];
+	};
+
+	it("recovers 3 of 10 from the journal, then resumes to the final summary", async () => {
+		render(<ChatPane session={session} initialMessages={seedMidApply()} />);
+
+		// The recovered progress is the journal's 3 of 10 — not a reset (0) and not
+		// a stale/lost value — rebuilt from the persisted journal state on mount.
+		const bar = screen.getByRole("progressbar");
+		expect(bar.getAttribute("aria-valuenow")).toBe("3");
+		expect(bar.getAttribute("aria-valuemax")).toBe("10");
+
+		// Resuming drives the remaining operations to completion and lands the
+		// final result summary, with counts derived from the journal.
+		await screen.findByText(
+			/Moved 10 files into 3 folders in Downloads/,
+			{},
+			{ timeout: 6000 },
+		);
+		expect(screen.getByText("Sort complete")).toBeTruthy();
+		expect(
+			screen.getByText(/Nothing was renamed, overwritten, or deleted\./),
+		).toBeTruthy();
 	}, 15000);
 });
 

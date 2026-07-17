@@ -9,6 +9,8 @@
 // `progress` → `plan`, an approval yields a `result`, and a `result` can be
 // followed by an `undo`. `failed` is the terminal error state for any step.
 
+import type { ApplyJournalState } from "./apply-progress-model";
+
 /** A destination folder in a proposed sort plan. */
 export interface PlanFolder {
 	/** Human-readable destination folder name (never a filesystem path). */
@@ -66,6 +68,16 @@ export interface ProgressMessage extends BaseMessage {
 	readonly label: string;
 	readonly current: number;
 	readonly total: number;
+	/**
+	 * When this progress tracks an in-flight apply (S7), the durable journal
+	 * state it derives from — the single source of truth. Persisted with the
+	 * transcript so a mid-apply reload can rebuild and resume the exact progress
+	 * from the journal; `label`/`current`/`total` are always derived from it (via
+	 * `applyProgressMessage`), never hand-set, so the card can't disagree with
+	 * what the journal recorded. Absent for non-apply progress (e.g. scanning),
+	 * which has no durable journal behind it.
+	 */
+	readonly apply?: ApplyJournalState;
 }
 
 /** A reviewable sort plan (summary → grouped destinations → full move set). */

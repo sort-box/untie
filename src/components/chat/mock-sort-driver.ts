@@ -18,6 +18,14 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 import {
+	type ApplyJournalState,
+	applyOperationCompleted,
+	applyProgressMessage,
+	buildApplyJournalState,
+	buildApplyResult,
+	deriveApplyProgress,
+} from "./apply-progress-model";
+import {
 	type ChatMessage,
 	type PlanFolder,
 	type PlanMessage,
@@ -364,47 +372,88 @@ export function buildSortPlanSteps(input: {
 	return steps;
 }
 
+/** The folder the mock apply reports moving into, for the summary copy. */
+const APPLY_LOCATION_LABEL = "Downloads";
+/** Delay before the first (starting / recovered) apply progress step. */
+const APPLY_FIRST_STEP_DELAY_MS = 250;
+/** Delay between each journaled per-operation advance. */
+const APPLY_PER_OPERATION_DELAY_MS = 40;
+
+/**
+ * Replay one apply from a journal state, one operation at a time. The starting
+ * (or recovered) state is shown first, then each pending operation is advanced
+ * with `applyOperationCompleted` and re-derived into a `progress` step; the last
+ * advance completes the journal and yields the final `result`. Every step is
+ * DERIVED from the journal (via `applyProgressMessage` / `buildApplyResult`), so
+ * the scripted timing is the only mock left — the numbers are the journal's.
+ * This is the seam the real journal IPC (W14) plugs into: swap where the events
+ * come from, keep the model.
+ */
+function applyStepsFromState(input: {
+	applyId: string;
+	now: number;
+	state: ApplyJournalState;
+}): DriverStep[] {
+	const { applyId, now, state } = input;
+	const meta = { id: applyId, createdAt: now };
+	// Show the starting / recovered journal state immediately so a resumed apply
+	// keeps its recovered count on screen before advancing.
+	const steps: DriverStep[] = [
+		{
+			delayMs: APPLY_FIRST_STEP_DELAY_MS,
+			message: applyProgressMessage(state, meta),
+		},
+	];
+	let current = state;
+	while (deriveApplyProgress(current).status === "applying") {
+		current = applyOperationCompleted(current);
+		const stillApplying = deriveApplyProgress(current).status === "applying";
+		steps.push({
+			delayMs: APPLY_PER_OPERATION_DELAY_MS,
+			message: stillApplying
+				? applyProgressMessage(current, meta)
+				: buildApplyResult(current, meta),
+		});
+	}
+	return steps;
+}
+
 /**
  * Apply simulation, run when the user approves a `ready` plan: a determinate
- * `progress` message evolves into the final `result`. The moved/created counts
- * derive from the approved plan's own move set, so they always match the
- * exact-counts copy the user approved.
+ * per-operation `progress` message evolves into the final `result`. The journal
+ * state is built from the approved plan's own move set and every count derives
+ * from it, so the progress and the summary always match the exact-counts copy
+ * the user approved. Standing in for the journaled apply engine (W14).
  */
 export function buildApplySteps(input: {
 	applyId: string;
 	now: number;
 	folders: readonly PlanFolder[];
+	/** Opaque apply handle (W14's `applyPlan` operationId); defaulted for the mock. */
+	operationId?: string;
 }): DriverStep[] {
-	const { applyId, now, folders } = input;
-	const movedCount = planMoveCount(folders);
-	const folderCount = folders.length;
-	const createdFolderCount = planCreatedFolderCount(folders);
+	const { applyId, now, folders, operationId } = input;
+	const state = buildApplyJournalState({
+		operationId: operationId ?? `op_${applyId}`,
+		locationLabel: APPLY_LOCATION_LABEL,
+		folders,
+	});
+	return applyStepsFromState({ applyId, now, state });
+}
 
-	return [
-		{
-			delayMs: 300,
-			message: {
-				kind: "progress",
-				id: applyId,
-				createdAt: now,
-				label: "Moving files into folders",
-				current: 1,
-				total: Math.max(movedCount, 1),
-			},
-		},
-		{
-			delayMs: 600,
-			message: {
-				kind: "result",
-				id: applyId,
-				createdAt: now,
-				summary: `Moved ${movedCount} files into ${folderCount} folders in Downloads. Nothing was renamed, overwritten, or deleted.`,
-				movedCount,
-				folderCount,
-				createdFolderCount,
-			},
-		},
-	];
+/**
+ * Resume an apply that was in flight when the transcript was persisted (S7
+ * durability). Given the recovered journal state, it drives ONLY the remaining
+ * pending operations to completion — the already-done ones stay done — so a
+ * mid-apply reload continues from where the journal left off rather than
+ * restarting.
+ */
+export function resumeApplySteps(input: {
+	applyId: string;
+	now: number;
+	state: ApplyJournalState;
+}): DriverStep[] {
+	return applyStepsFromState(input);
 }
 
 /**

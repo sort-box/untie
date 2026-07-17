@@ -6,6 +6,13 @@ import type {
 	PersistedChatSession,
 } from "../../../electron/capabilities/contracts.cjs";
 import {
+	applyOperationCompleted,
+	applyProgressMessage,
+	buildApplyJournalState,
+	deriveApplyProgress,
+	findInFlightApply,
+} from "./apply-progress-model";
+import {
 	deleteAllChatData,
 	deleteChatSession,
 	isChatPersistenceAvailable,
@@ -55,7 +62,9 @@ function installFakeBridge(): void {
 				title: "New chat",
 				createdAt: session.createdAt,
 				updatedAt: latest(session.messages, session.createdAt),
-				messages: session.messages,
+				// The fs-backed store serializes to JSON, so clone to faithfully drop
+				// anything non-serializable and prove kind-specific fields round-trip.
+				messages: JSON.parse(JSON.stringify(session.messages)),
 			};
 			sessions.set(session.id, stored);
 			return ok({ session: stored });
@@ -122,6 +131,49 @@ describe("chat persistence client", () => {
 		const summaries = await listChatSessions();
 		expect(summaries).toHaveLength(1);
 		expect(summaries[0]).toMatchObject({ id: "s1", messageCount: 2 });
+	});
+
+	it("persists an in-flight apply's journal state so a reload can resume it", async () => {
+		installFakeBridge();
+
+		// Journal an apply 3 of 10 moves in, then persist it exactly as the pane
+		// would when the transcript changes mid-apply.
+		let state = buildApplyJournalState({
+			operationId: "op-1",
+			locationLabel: "Downloads",
+			folders: [
+				{
+					name: "Invoices",
+					isNew: false,
+					files: ["a.pdf", "b.pdf", "c.pdf", "d.pdf"],
+				},
+				{ name: "Photos", isNew: true, files: ["1.jpg", "2.jpg", "3.jpg"] },
+				{ name: "Installers", isNew: true, files: ["x.pkg", "y.dmg", "z.dmg"] },
+			],
+		});
+		for (let i = 0; i < 3; i += 1) state = applyOperationCompleted(state);
+		const inFlight = applyProgressMessage(state, {
+			id: "apply-1",
+			createdAt: 200,
+		});
+		const transcript: ChatMessage[] = [
+			{ kind: "user", id: "u1", createdAt: 100, text: "Sort my Downloads" },
+			inFlight,
+		];
+
+		await saveChatSession({ id: "s1", createdAt: 100, messages: transcript });
+
+		// A fresh mount reconstructs the pane from the loaded session. The embedded
+		// journal state survives, and the recovered progress is the durable 3 of 10.
+		const loaded = await loadChatSession("s1");
+		const recovered = findInFlightApply(loaded?.messages ?? []);
+		expect(recovered).toBeDefined();
+		if (!recovered) throw new Error("expected an in-flight apply");
+		expect(recovered.apply).toEqual(state);
+		const progress = deriveApplyProgress(recovered.apply);
+		expect(progress.completed).toBe(3);
+		expect(progress.total).toBe(10);
+		expect(progress.status).toBe("applying");
 	});
 
 	it("deletes a single session and all sessions", async () => {
