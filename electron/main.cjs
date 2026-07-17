@@ -31,6 +31,7 @@ const { createGrantLifecycle } = require("./grant-lifecycle.cjs");
 const { createChatStore } = require("./chat-store.cjs");
 const { createFolderScanner } = require("./folder-scanner.cjs");
 const { createOpaqueFileRegistry } = require("./opaque-file-registry.cjs");
+const { createItemActions } = require("./item-actions.cjs");
 const {
 	createRiskAcknowledgmentStore,
 	createSortRiskService,
@@ -64,6 +65,7 @@ const capabilityReferenceStore = new CapabilityReferenceStore();
 const capabilityAuthorizer = createCapabilityAuthorizer({
 	store: capabilityReferenceStore,
 });
+const itemActions = createItemActions({ shell, fsApi: fs });
 
 async function checkStartupAuth() {
 	const cookies = await session.defaultSession.cookies.get({
@@ -145,6 +147,8 @@ const capabilityImplementations = {
 			signal,
 		}),
 	acknowledgeFolderRisk: async (input) => sortRiskService.acknowledge(input),
+	openItem: itemActions.openItem,
+	revealItem: itemActions.revealItem,
 };
 
 const contentTypes = {
