@@ -24,6 +24,7 @@ const { initializeLocalStores } = require("./local-store.cjs");
 const { createCrashRecoveryEngine } = require("./crash-recovery.cjs");
 const { runStartupGate } = require("./startup-gate.cjs");
 const { initializeFileIndex } = require("./index-store.cjs");
+const { createLocalDataEraser } = require("./local-data-eraser.cjs");
 const { createIndexSynchronizationEngine } = require("./index-sync.cjs");
 const { createIndexRetrieval } = require("./index-retrieval.cjs");
 const { createFilesystemWatcher } = require("./filesystem-watcher.cjs");
@@ -55,6 +56,9 @@ let indexSyncEngine;
 let indexRetrieval;
 let filesystemWatcher;
 let sortRiskService;
+let localStores;
+let storesDirectory;
+let restoredGrants = [];
 let startupStatus = {
 	status: "blocked",
 	reasons: ["startup_pending"],
@@ -120,6 +124,32 @@ const capabilityImplementations = {
 	deleteChatSession: async ({ sessionId }) =>
 		requireChatStore().deleteSession(sessionId),
 	deleteAllChatData: async () => requireChatStore().deleteAll(),
+	deleteAllLocalData: async () => {
+		const eraser = createLocalDataEraser({
+			localDataDirectory: app.getPath("userData"),
+			services: {
+				storesDirectory,
+				stopFilesystemWatcher: () => filesystemWatcher?.close(),
+				stopIndexSync: () => indexSyncEngine?.stop?.(),
+				closeFileIndex: () => {
+					fileIndex?.database.close();
+					fileIndex = undefined;
+				},
+				recreateStores: () => {
+					localStores = initializeLocalStores(storesDirectory);
+					fileIndex = initializeFileIndex(storesDirectory);
+				},
+				clearOpaqueReferences: () => capabilityReferenceStore.clear(),
+				clearRestoredGrants: () => {
+					restoredGrants = [];
+				},
+			},
+		});
+		const result = await eraser.eraseAll();
+		app.relaunch();
+		app.exit(0);
+		return result;
+	},
 	selectFolder: async () => folderGrantService.selectFolder(),
 	listFolderGrants: async () => folderGrantService.listGrants(),
 	revokeFolderGrant: async (input) => folderGrantService.revokeGrant(input),
@@ -268,11 +298,10 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
-	let restoredGrants = [];
 	startupStatus = await runStartupGate({
 		initializeStores() {
-			const storesDirectory = path.join(app.getPath("userData"), "stores");
-			const localStores = initializeLocalStores(storesDirectory);
+			storesDirectory = path.join(app.getPath("userData"), "stores");
+			localStores = initializeLocalStores(storesDirectory);
 			fileIndex = initializeFileIndex(storesDirectory);
 			chatStore = createChatStore(
 				path.join(storesDirectory, "chat", "history"),

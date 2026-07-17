@@ -43,6 +43,7 @@ describe("sandboxed preload bridge", () => {
 				"cancellableDelay",
 				"classifyFolderRisk",
 				"deleteAllChatData",
+				"deleteAllLocalData",
 				"deleteChatSession",
 				"getStartupStatus",
 				"getIndexStatus",
