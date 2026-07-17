@@ -39,6 +39,18 @@ export interface AccuracyMetrics {
 	latencyMs: LatencyMetrics;
 }
 
+export interface FindQueryOutcome {
+	queryId: string;
+	kind: FindQueryKind;
+	query: string;
+	relevantIds: string[];
+	resultIds: string[];
+	firstRelevantRank: number | null;
+	hitTop1: boolean;
+	hitTop3: boolean;
+	candidates: number;
+}
+
 export interface FindEvaluationReport {
 	runtime: string;
 	sqlite: "node:sqlite";
@@ -64,4 +76,5 @@ export interface FindEvaluationReport {
 		emptyResultRate: number;
 		latencyMs: LatencyMetrics;
 	};
+	queryOutcomes: FindQueryOutcome[];
 }

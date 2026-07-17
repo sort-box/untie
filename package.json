@@ -24,6 +24,7 @@
 		"spike:r2": "bun run src/server/llm/sort-plan-spike/runner.ts",
 		"spike:r3": "node --experimental-strip-types src/spikes/r3/cli.ts",
 		"eval:find": "node --experimental-strip-types src/eval/find/cli.ts",
+		"quality:find": "node --experimental-strip-types src/eval/find/quality-gate-cli.ts",
 		"typecheck": "tsc --noEmit",
 		"format": "biome format",
 		"lint": "biome lint",
